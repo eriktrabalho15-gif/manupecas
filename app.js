@@ -169,12 +169,21 @@ const historyDateTo = document.querySelector("#history-date-to");
 const historyList = document.querySelector("#history-list");
 const approvalList = document.querySelector("#approval-list");
 const purchaseOverviewList = document.querySelector("#purchase-overview-list");
+const dashboardCarFilter = document.querySelector("#dashboard-car-filter");
+const dashboardTeamFilter = document.querySelector("#dashboard-team-filter");
+const dashboardDateFrom = document.querySelector("#dashboard-date-from");
+const dashboardDateTo = document.querySelector("#dashboard-date-to");
+const dashboardClearFilters = document.querySelector("#dashboard-clear-filters");
+const dashboardKpis = document.querySelector("#dashboard-kpis");
+const dashboardStageList = document.querySelector("#dashboard-stage-list");
+const dashboardSlaList = document.querySelector("#dashboard-sla-list");
 const userForm = document.querySelector("#user-form");
 const userList = document.querySelector("#user-list");
 const emailSettingsForm = document.querySelector("#email-settings-form");
 const emailSettingsGrid = document.querySelector("#email-settings-grid");
 const emailSettingsMessage = document.querySelector("#email-settings-message");
 const partRegistrationList = document.querySelector("#part-registration-list");
+const partRegistrationStatusFilter = document.querySelector("#part-registration-status-filter");
 const slaRequest = document.querySelector("#sla-request");
 const slaService = document.querySelector("#sla-service");
 const slaBuy = document.querySelector("#sla-buy");
@@ -408,6 +417,16 @@ historyFilter.addEventListener("input", () => renderHistory());
 historyPrefixFilter.addEventListener("input", () => renderHistory());
 historyDateFrom.addEventListener("change", () => renderHistory());
 historyDateTo.addEventListener("change", () => renderHistory());
+[dashboardCarFilter, dashboardTeamFilter, dashboardDateFrom, dashboardDateTo].forEach((control) => {
+  control?.addEventListener("input", () => renderDashboard());
+  control?.addEventListener("change", () => renderDashboard());
+});
+dashboardClearFilters?.addEventListener("click", () => {
+  [dashboardCarFilter, dashboardTeamFilter, dashboardDateFrom, dashboardDateTo].forEach((control) => {
+    if (control) control.value = "";
+  });
+  renderDashboard();
+});
 userForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const data = new FormData(userForm);
@@ -539,6 +558,8 @@ partRegistrationList.addEventListener("click", (event) => {
   }
 });
 
+partRegistrationStatusFilter?.addEventListener("change", renderPartRegistrations);
+
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".part-search")) {
     document.querySelectorAll(".suggestions").forEach((box) => box.classList.remove("open"));
@@ -562,7 +583,7 @@ async function startApp() {
   body.dataset.role = currentUser.role;
   sessionLabel.textContent = `${currentUser.label} | ${currentUser.email}`;
   userGreeting.textContent = getUserGreeting(currentUser);
-  currentPage = currentUser.role === "pcm" ? "request" : currentUser.role === "compras" ? "purchase" : "pending";
+  currentPage = currentUser.role === "pcm" ? "request" : currentUser.role === "compras" ? "purchase" : ["admin", "manager"].includes(currentUser.role) ? "dashboard" : "pending";
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
@@ -671,6 +692,7 @@ function setPage(page) {
   currentPage = page;
   tabButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === page));
   pages.forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
+  if (page === "dashboard") renderDashboard();
   if (page === "history") renderHistory();
   if (page === "approval") renderApprovalQueue();
   if (page === "purchase") renderPurchaseOverview();
@@ -726,7 +748,7 @@ function getUserNotifications() {
     }
     if (currentUser.role === "almox") {
       if (request.status === "solicitacao") push(request, "almox", "Pendente de atendimento do Almoxarifado", "solicitacao");
-      if (isSapRequestPending(request)) push(request, "sap", "Pendente solicitação SAP", "compra");
+      if (isSapRequestPending(request)) push(request, "sap", request.sapDraftNumber ? "Pendente aprovação do esboço SAP" : "Pendente esboço SAP", "compra");
       if (isWaitingArrivalPending(request)) push(request, "espera", "Aguardando chegada da peça", "espera");
       if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
       if (hasPickupPending(request)) push(request, "retirada", "Retirada do PCM pendente", "atendimento");
@@ -849,6 +871,7 @@ function loadRequests() {
 function normalizeRequest(request) {
   const cancellationWasApproved = Boolean(request?.cancellationApprovedAt) || request?.status === "cancelado";
   const normalizedStatus = cancellationWasApproved ? "cancelado" : hasPendingCancellation(request) ? "cancelamento" : normalizeStatus(request.status, request.items || []);
+  const sapDraftNumber = normalizeSapRequestNumber(request.sapDraftNumber);
   const sapRequestNumber = normalizeSapRequestNumber(request.sapRequestNumber);
   if (request.items) {
     const rawItems = request.items.map((item) => normalizeItem(item, normalizedStatus));
@@ -862,6 +885,9 @@ function normalizeRequest(request) {
       status: finalStatus,
       purchaseOrder: request.purchaseOrder || "",
       response: normalizeSapRequestResponse(request.response, sapRequestNumber),
+      sapDraftNumber,
+      sapDraftAt: sapDraftNumber ? request.sapDraftAt || "" : "",
+      sapDraftBy: sapDraftNumber ? request.sapDraftBy || "" : "",
       sapRequestNumber,
       sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
       sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
@@ -919,6 +945,9 @@ function normalizeRequest(request) {
     status: finalStatus,
     purchaseOrder: request.purchaseOrder || "",
     response: normalizeSapRequestResponse(request.response, sapRequestNumber),
+    sapDraftNumber,
+    sapDraftAt: sapDraftNumber ? request.sapDraftAt || "" : "",
+    sapDraftBy: sapDraftNumber ? request.sapDraftBy || "" : "",
     sapRequestNumber,
     sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
     sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
@@ -982,7 +1011,7 @@ function normalizeSapRequestNumber(value) {
 function normalizeSapRequestResponse(response, sapRequestNumber) {
   const text = String(response || "");
   const hasInvalidSapTest = !sapRequestNumber && /solicita[cç][aã]o sap registrada[\s\S]*\bteste\b/i.test(text);
-  return hasInvalidSapTest ? "Pendente solicitação SAP pelo Almoxarifado." : text;
+  return hasInvalidSapTest ? "Pendente esboço SAP pelo Almoxarifado." : text;
 }
 
 function normalizeItem(item, requestStatus = "solicitacao") {
@@ -1165,14 +1194,19 @@ function repairInvalidSapTestRequests() {
   let changed = false;
 
   requests = requests.map((request) => {
+    const sapDraftNumber = normalizeSapRequestNumber(request.sapDraftNumber);
     const sapRequestNumber = normalizeSapRequestNumber(request.sapRequestNumber);
     const response = normalizeSapRequestResponse(request.response, sapRequestNumber);
     const shouldCleanSapFields = !sapRequestNumber && String(request.sapRequestNumber || "").trim().toLowerCase() === "teste";
-    if (!shouldCleanSapFields && response === (request.response || "")) return request;
+    const shouldCleanDraftFields = !sapDraftNumber && String(request.sapDraftNumber || "").trim().toLowerCase() === "teste";
+    if (!shouldCleanSapFields && !shouldCleanDraftFields && response === (request.response || "")) return request;
 
     changed = true;
     return {
       ...request,
+      sapDraftNumber,
+      sapDraftAt: sapDraftNumber ? request.sapDraftAt || "" : "",
+      sapDraftBy: sapDraftNumber ? request.sapDraftBy || "" : "",
       sapRequestNumber,
       sapRequestAt: sapRequestNumber ? request.sapRequestAt || "" : "",
       sapRequestBy: sapRequestNumber ? request.sapRequestBy || "" : "",
@@ -1796,7 +1830,7 @@ async function mirrorOperationalTables(normalizedRows) {
       const cdServedQty = getCdServedQty(item);
       const purchaseQty = Math.max(getPurchasePendingQty(item), Number(item.purchaseQty) || 0, Number(item.purchaseReceivedQty) || 0);
       const cdStartedAt = request.attendedAt || request.createdAt || "";
-      const purchaseStartedAt = request.purchaseAt || request.purchaseApprovedAt || "";
+      const purchaseStartedAt = request.purchaseAt || request.sapDraftAt || request.purchaseApprovedAt || "";
       const receiptStartedAt = (Number(item.cdQty) || Number(item.cdReceivedQty)) ? request.cdAt : request.purchaseArrivedAt;
 
       if (cdSentQty > 0 || cdServedQty > 0) {
@@ -1829,14 +1863,14 @@ async function mirrorOperationalTables(normalizedRows) {
           pedido_compra: request.purchaseOrder || "",
           previsao_entrega: toNullableDate(request.deliveryDate),
           data_chegada: toNullableDate(request.purchaseArrivedDate),
-          observacao: request.buyerNote || "",
+          observacao: request.buyerNote || (request.sapDraftNumber ? `Esboço SAP: ${request.sapDraftNumber}` : ""),
           responsavel_sap: request.sapRequestBy || "",
           responsavel_compras: request.purchaseUpdatedBy || "",
           inicio_em: toNullableIso(purchaseStartedAt || request.sapRequestAt),
           pedido_registrado_em: toNullableIso(request.purchaseUpdatedAt || request.purchaseAt),
           chegada_em: toNullableIso(request.purchaseArrivedAt),
           finalizado_em: toNullableIso(request.purchaseArrivedAt || request.purchaseUpdatedAt),
-          sla_minutos: getElapsedMinutes(purchaseStartedAt || request.sapRequestAt, request.purchaseArrivedAt || request.purchaseUpdatedAt),
+          sla_minutos: getElapsedMinutes(purchaseStartedAt || request.sapRequestAt, request.purchaseArrivedAt || request.purchaseUpdatedAt || request.sapRequestAt),
           status: getItemPurchaseStatus(request, item),
           criado_em: toNullableIso(request.createdAt) || new Date().toISOString(),
         });
@@ -2471,6 +2505,10 @@ function render() {
     renderHistory();
     return;
   }
+  if (currentPage === "dashboard") {
+    renderDashboard();
+    return;
+  }
   if (currentPage === "admin") {
     renderUsers();
     return;
@@ -2661,6 +2699,8 @@ function createCard(request) {
   const purchaseItems = card.querySelector(".purchase-items");
   const sapCopyItemsButton = card.querySelector(".sap-copy-items");
   const sapCopyMessage = card.querySelector(".sap-copy-message");
+  const sapDraftInput = card.querySelector(".sap-draft-number");
+  const sapDraftField = card.querySelector(".sap-draft-field");
   const sapRequestInput = card.querySelector(".sap-request-number");
   const sapRequestSaveButton = card.querySelector(".sap-request-save");
   const purchaseOrderInput = card.querySelector(".purchase-order");
@@ -2712,6 +2752,8 @@ function createCard(request) {
   note.value = request.response;
   renderCancellationPanel(request, cancelPanel);
   purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : isWaitingArrivalQueue ? "Em espera" : "Solicitação SAP";
+  sapDraftInput.value = request.sapDraftNumber || "";
+  sapDraftInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapDraftNumber);
   sapRequestInput.value = request.sapRequestNumber || "";
   sapRequestInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
   purchaseOrderInput.value = request.purchaseOrder || "";
@@ -2902,10 +2944,12 @@ function createCard(request) {
   purchaseEmailButton.hidden = !isBuyerPurchaseQueue;
   sapCopyItemsButton.hidden = !isSapRequestView;
   sapCopyMessage.hidden = !isSapRequestView;
+  sapRequestSaveButton.textContent = request.sapDraftNumber ? "Salvar solicitação SAP" : "Salvar esboço SAP";
   sapRequestSaveButton.hidden = !isSapRequestQueue || Boolean(request.sapRequestNumber);
   purchaseArrivalSaveButton.hidden = !isWaitingArrivalQueue;
   purchaseArrivalButton.hidden = !isReceiptQueue;
-  sapRequestInput.closest(".field").hidden = (isReceiptFlow && !request.sapRequestNumber) || (isSapRequestView && currentUser.role !== "almox");
+  sapDraftField.hidden = (isReceiptFlow && !request.sapDraftNumber) || (isSapRequestView && currentUser.role !== "almox");
+  sapRequestInput.closest(".field").hidden = (isReceiptFlow && !request.sapRequestNumber) || (isSapRequestView && (currentUser.role !== "almox" || !request.sapDraftNumber));
   purchaseOrderInput.closest(".field").hidden = true;
   deliveryDateInput.closest(".field").hidden = true;
   buyerNoteInput.closest(".field").hidden = true;
@@ -3402,7 +3446,37 @@ async function saveSapRequestNumber(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
+  const sapDraftInput = card.querySelector(".sap-draft-number");
   const sapRequestInput = card.querySelector(".sap-request-number");
+  const sapDraftNumber = normalizeSapRequestNumber(sapDraftInput?.value || request.sapDraftNumber);
+
+  if (!request.sapDraftNumber) {
+    if (!sapDraftNumber) {
+      if (sapDraftInput) {
+        sapDraftInput.value = "";
+        sapDraftInput.focus();
+      }
+      window.alert("Informe o número do esboço SAP.");
+      return;
+    }
+
+    prepareMailPopup();
+    const now = new Date().toISOString();
+    const updatedRequest = {
+      ...request,
+      sapDraftNumber,
+      sapDraftAt: request.sapDraftAt || now,
+      sapDraftBy: currentUser.name || currentUser.label,
+      response: `Esboço SAP registrado pelo Almoxarifado: ${sapDraftNumber}. Aguardando aprovação do esboço SAP.`,
+    };
+    requests = requests.map((item) => (item.id === id ? updatedRequest : item));
+    persistRequestsLocally();
+    openPurchaseEmailDraft(updatedRequest, "");
+    await saveRequestsSafely("esboço SAP");
+    render();
+    return;
+  }
+
   const sapRequestNumber = normalizeSapRequestNumber(sapRequestInput.value);
   if (!sapRequestNumber) {
     sapRequestInput.value = "";
@@ -3414,6 +3488,9 @@ async function saveSapRequestNumber(id, card) {
   const now = new Date().toISOString();
   const updatedRequest = {
     ...request,
+    sapDraftNumber: request.sapDraftNumber || sapDraftNumber,
+    sapDraftAt: request.sapDraftAt || now,
+    sapDraftBy: request.sapDraftBy || currentUser.name || currentUser.label,
     sapRequestNumber,
     sapRequestAt: request.sapRequestAt || now,
     sapRequestBy: currentUser.name || currentUser.label,
@@ -3803,7 +3880,8 @@ function getDisplayStatus(request) {
 
 function getRequestStatusText(request, displayStatus = getDisplayStatus(request)) {
   if (displayStatus === "compra") {
-    if (!request.sapRequestNumber) return "Pendente solicitação SAP pelo Almoxarifado";
+    if (!request.sapDraftNumber) return "Pendente esboço SAP pelo Almoxarifado";
+    if (!request.sapRequestNumber) return "Pendente aprovação do esboço SAP";
     if (!isPurchaseArrivalRegistered(request)) return "Em espera da chegada da peça";
   }
   return statusText[displayStatus] || displayStatus || "-";
@@ -3847,6 +3925,7 @@ function getItemPurchaseStatus(request, item) {
     if (isPurchaseArrivalRegistered(request)) return "Pendente entrada e recebimento";
     if (request.purchaseOrder) return request.deliveryDate ? "Pendente de chegada e recebimento" : "Pendente de data de chegada";
     if (request.sapRequestNumber) return "Solicitação SAP aberta";
+    if (request.sapDraftNumber) return "Aguardando aprovação do esboço SAP";
     return "Aprovada para compra";
   }
   if (item.purchaseApproval === "rejected") return "Não aprovado";
@@ -3986,6 +4065,9 @@ function updateRequest(id, status, response) {
       answeredAt: status === "solicitacao" ? "" : request.answeredAt,
       cdAt: status === "solicitacao" ? "" : request.cdAt,
       purchaseOrder: status === "solicitacao" ? "" : request.purchaseOrder,
+      sapDraftNumber: status === "solicitacao" ? "" : request.sapDraftNumber,
+      sapDraftAt: status === "solicitacao" ? "" : request.sapDraftAt,
+      sapDraftBy: status === "solicitacao" ? "" : request.sapDraftBy,
       sapRequestNumber: status === "solicitacao" ? "" : request.sapRequestNumber,
       sapRequestAt: status === "solicitacao" ? "" : request.sapRequestAt,
       sapRequestBy: status === "solicitacao" ? "" : request.sapRequestBy,
@@ -4389,13 +4471,21 @@ function linkPartRegistrationsToRequest(request) {
 function renderPartRegistrations() {
   if (!partRegistrationList) return;
   const canManage = canManagePartRegistrations();
+  const statusFilter = partRegistrationStatusFilter?.value || "";
+  const visibleRegistrations = [...partRegistrations]
+    .sort((a, b) => (new Date(b.createdAt || 0).getTime() || 0) - (new Date(a.createdAt || 0).getTime() || 0))
+    .filter((item) => {
+      if (statusFilter === "pending") return item.status !== "done";
+      if (statusFilter === "done") return item.status === "done";
+      return true;
+    });
 
-  if (partRegistrations.length === 0) {
+  if (visibleRegistrations.length === 0) {
     partRegistrationList.innerHTML = '<div class="empty-state compact-empty">Nenhuma solicitação de cadastro de peça.</div>';
     return;
   }
 
-  partRegistrationList.innerHTML = partRegistrations
+  partRegistrationList.innerHTML = visibleRegistrations
     .map((item) => {
       const done = item.status === "done";
       return `<article class="part-registration-row ${done ? "done" : ""}" data-id="${escapeAttr(item.id)}">
@@ -4716,9 +4806,10 @@ function getAreaSla(request, area) {
     return end ? formatDuration(start, end) : "-";
   }
   if (area === "compra") {
-    if (!request.purchaseAt) return "-";
-    const end = request.purchaseArrivedAt || (hasApprovedPurchasePending(request) || getDisplayStatus(request) === "compra" ? now : request.purchaseAt);
-    return end ? formatDuration(request.purchaseAt, end) : "-";
+    const start = request.purchaseAt || request.sapDraftAt || request.sapRequestAt;
+    if (!start) return "-";
+    const end = request.purchaseArrivedAt || (hasApprovedPurchasePending(request) || getDisplayStatus(request) === "compra" ? now : start);
+    return end ? formatDuration(start, end) : "-";
   }
   if (area === "recebimento") {
     const start = request.purchaseArrivedAt || request.cdAt || request.purchaseAt;
@@ -4733,13 +4824,248 @@ function getCurrentSla(request) {
   return formatDuration(request.createdAt, request.withdrawnAt || new Date().toISOString());
 }
 
+function renderDashboard() {
+  if (!dashboardKpis || !dashboardStageList || !dashboardSlaList) return;
+  if (!["admin", "manager"].includes(currentUser?.role)) return;
+
+  const filtered = getDashboardFilteredRequests();
+  const selectedTeam = dashboardTeamFilter?.value || "";
+  const teamAreas = getDashboardAreasForTeam(selectedTeam, getDashboardAreaOptions());
+  const teamAreaKeys = teamAreas.map((area) => area.key);
+  const relevantRequests = selectedTeam
+    ? filtered.filter((request) => teamAreaKeys.some((area) => isDashboardAreaRequested(request, area)))
+    : filtered;
+  const completedRequests = relevantRequests.filter((request) => teamAreaKeys.some((area) => isDashboardAreaCompleted(request, area)));
+  const pendingRequests = relevantRequests.filter((request) => teamAreaKeys.some((area) => isDashboardAreaActive(request, area)));
+  const closedRequests = filtered.filter((request) => ["retirado", "cancelado"].includes(getDisplayStatus(request)));
+  const doneRequests = filtered.filter((request) => getDisplayStatus(request) === "retirado");
+  const canceledRequests = filtered.filter((request) => getDisplayStatus(request) === "cancelado");
+  const totalItems = relevantRequests.reduce((sum, request) => sum + (request.items?.length || 0), 0);
+  const closedSlaValues = closedRequests
+    .map((request) => durationMs(request.createdAt, request.withdrawnAt || request.cancellationApprovedAt))
+    .filter(Number.isFinite);
+  const teamSlaValues = selectedTeam
+    ? relevantRequests.flatMap((request) => teamAreaKeys.map((area) => getDashboardAreaSlaMs(request, area))).filter(Number.isFinite)
+    : closedSlaValues;
+
+  const kpis = selectedTeam
+    ? [
+      { label: "Acionadas", value: relevantRequests.length, hint: `${formatItemCount(totalItems)} passaram pela área` },
+      { label: "Concluídas", value: completedRequests.length, hint: "Atendimento finalizado pela área" },
+      { label: "Pendentes", value: pendingRequests.length, hint: "Aguardando ação da área" },
+      { label: "SLA médio", value: formatMsAverage(teamSlaValues), hint: `${getDashboardTeamLabel(selectedTeam)} concluído` },
+    ]
+    : [
+      { label: "Solicitações", value: filtered.length, hint: `${formatItemCount(totalItems)} no período` },
+      { label: "Em andamento", value: filtered.length - closedRequests.length, hint: "Fluxo ainda aberto" },
+      { label: "Finalizadas", value: doneRequests.length, hint: `${canceledRequests.length} cancelada(s)` },
+      { label: "SLA médio finalizado", value: formatMsAverage(closedSlaValues), hint: "Tempo total concluído" },
+    ];
+
+  dashboardKpis.innerHTML = kpis.map((item) => `<article class="dashboard-kpi">
+    <span>${item.label}</span>
+    <strong>${item.value}</strong>
+    <small>${item.hint}</small>
+  </article>`).join("");
+
+  renderDashboardStages(filtered);
+  renderDashboardSla(filtered);
+}
+
+function getDashboardFilteredRequests() {
+  const carTerm = normalizeSearchCompact(dashboardCarFilter?.value || "");
+  const teamTerm = dashboardTeamFilter?.value || "";
+  const dateFrom = dashboardDateFrom?.value || "";
+  const dateTo = dashboardDateTo?.value || "";
+
+  return requests.filter((request) => {
+    if (carTerm) {
+      const targetText = normalizeSearchCompact([request.bus, request.targetType, getRequestTargetLabel(request)].filter(Boolean).join(" "));
+      if (!targetText.includes(carTerm)) return false;
+    }
+
+    if (teamTerm) {
+      if (!isDashboardTeamInRequest(request, teamTerm)) return false;
+    }
+
+    if (!isRequestInHistoryDateRange(request, dateFrom, dateTo)) return false;
+    return true;
+  });
+}
+
+function renderDashboardStages(source) {
+  const selectedTeam = dashboardTeamFilter?.value || "";
+  const areas = getDashboardAreasForTeam(selectedTeam, getDashboardAreaOptions());
+  const counts = areas.map(({ key, label }) => ({
+    key,
+    label,
+    requested: source.filter((request) => isDashboardAreaRequested(request, key)).length,
+    done: source.filter((request) => isDashboardAreaCompleted(request, key)).length,
+    pending: source.filter((request) => isDashboardAreaActive(request, key)).length,
+  })).filter((item) => item.requested > 0);
+
+  dashboardStageList.innerHTML = counts.length ? counts.map((item) => {
+    const percent = item.requested ? Math.round((item.done / item.requested) * 100) : 0;
+    return `<div class="dashboard-stage-row">
+      <div>
+        <strong>${item.label}</strong>
+        <span>Acionadas: ${item.requested} | Concluídas: ${item.done} | Pendentes: ${item.pending}</span>
+      </div>
+      <b>${percent}%</b>
+      <i style="--value:${percent}%"></i>
+    </div>`;
+  }).join("") : '<div class="empty-state compact">Nenhuma solicitação encontrada.</div>';
+}
+
+function renderDashboardSla(source) {
+  const selectedTeam = dashboardTeamFilter?.value || "";
+  const areas = getDashboardAreasForTeam(selectedTeam, getDashboardAreaOptions());
+
+  dashboardSlaList.innerHTML = areas.map((area) => {
+    const values = source.map((request) => getDashboardAreaSlaMs(request, area.key)).filter(Number.isFinite);
+    const pending = source.filter((request) => isDashboardAreaActive(request, area.key)).length;
+    return `<div class="dashboard-sla-row">
+      <span>${area.label}</span>
+      <strong>${formatMsAverage(values)}</strong>
+      <small>${values.length} concluída(s) | ${pending} pendente(s)</small>
+    </div>`;
+  }).join("");
+}
+
+function getDashboardAreaOptions() {
+  return [
+    { key: "cadastro", label: "Cadastro SAP" },
+    { key: "almox", label: "Almoxarifado" },
+    { key: "cd", label: "CD" },
+    { key: "compra", label: "Solicitação SAP/Espera" },
+    { key: "recebimento", label: "Recebimento" },
+    { key: "retirada", label: "Retirada" },
+    { key: "cancelamento", label: "Cancelamento" },
+  ];
+}
+
+function getDashboardStageKey(request) {
+  const displayStatus = getDisplayStatus(request);
+  if (displayStatus === "compra") return request.sapRequestNumber ? "espera" : "compra-sap";
+  if (displayStatus === "atendimento") return "atendimento";
+  return displayStatus;
+}
+
+function isDashboardTeamInRequest(request, team) {
+  const areas = getDashboardAreasForTeam(team, getDashboardAreaOptions()).map((area) => area.key);
+  if (!areas.length) return true;
+  return areas.some((area) => isDashboardAreaRequested(request, area));
+}
+
+function getDashboardTeamLabel(team) {
+  return {
+    pcm: "PCM",
+    almox: "Almoxarifado",
+    cd: "CD",
+    compras: "Compras",
+    manager: "Gerente",
+    admin: "Admin",
+  }[team] || "Todos";
+}
+
+function getDashboardAreaKeysForTeam(team) {
+  return {
+    pcm: ["retirada"],
+    almox: ["almox", "compra", "recebimento", "retirada"],
+    cd: ["cd", "recebimento"],
+    compras: ["compra"],
+    manager: ["cancelamento"],
+    admin: ["cadastro", "cancelamento"],
+  }[team] || getDashboardAreaOptions().map((area) => area.key);
+}
+
+function isDashboardAreaRequested(request, area) {
+  const registration = area === "cadastro" ? getRegistrationStepInfo(request) : null;
+  const displayStatus = getDisplayStatus(request);
+  if (area === "cadastro") return Boolean(registration?.requested);
+  if (area === "almox") return Boolean(request.createdAt);
+  if (area === "cd") return Boolean(request.cdAt || displayStatus === "cd");
+  if (area === "compra") return Boolean(request.purchaseAt || request.sapDraftNumber || request.sapRequestNumber || hasApprovedPurchasePending(request) || isSapRequestPending(request) || isWaitingArrivalPending(request));
+  if (area === "recebimento") return Boolean(request.receiptAt || displayStatus === "recebimento" || request.purchaseArrivedAt || request.items.some((item) => Number(item.cdReceivedQty || item.purchaseReceivedQty) > 0));
+  if (area === "retirada") return Boolean(request.withdrawnAt || request.pickupAt || hasPickupPending(request) || request.items.some((item) => getPickupReleasedQty(item) > 0 || getWithdrawnQty(item) > 0));
+  if (area === "cancelamento") return Boolean(request.cancellationRequestedAt || request.cancellationApprovedAt || request.cancellationRejectedAt || displayStatus === "cancelamento" || displayStatus === "cancelado");
+  return true;
+}
+
+function getDashboardAreasForTeam(team, allAreas) {
+  const keys = getDashboardAreaKeysForTeam(team);
+  return keys ? allAreas.filter((area) => keys.includes(area.key)) : allAreas;
+}
+
+function getDashboardAreaSlaMs(request, area) {
+  if (area === "cadastro") {
+    const registration = getRegistrationStepInfo(request);
+    if (!registration.requested || !registration.done || !registration.date) return NaN;
+    return durationMs(request.createdAt, registration.date);
+  }
+  if (area === "almox") {
+    if (!request.createdAt || !request.attendedAt) return NaN;
+    return durationMs(request.createdAt, request.attendedAt);
+  }
+  if (area === "cd") {
+    if (!isDashboardAreaRequested(request, "cd") || !request.attendedAt || !request.cdAt) return NaN;
+    return durationMs(request.attendedAt, request.cdAt);
+  }
+  if (area === "compra") {
+    if (!isDashboardAreaRequested(request, "compra")) return NaN;
+    const start = request.purchaseAt || request.cdAt || request.attendedAt || request.createdAt;
+    const end = request.purchaseArrivedAt || request.sapRequestAt;
+    if (!start || !end) return NaN;
+    return durationMs(start, end);
+  }
+  if (area === "recebimento") {
+    if (!isDashboardAreaRequested(request, "recebimento") || !request.receiptAt) return NaN;
+    const start = request.purchaseArrivedAt || request.cdAt || request.purchaseAt || request.createdAt;
+    return durationMs(start, request.receiptAt);
+  }
+  if (area === "retirada") {
+    if (!isDashboardAreaRequested(request, "retirada") || !request.withdrawnAt) return NaN;
+    const start = request.receiptAt || request.pickupAt || request.attendedAt || request.createdAt;
+    return durationMs(start, request.withdrawnAt);
+  }
+  if (area === "cancelamento") {
+    if (!request.cancellationRequestedAt || !(request.cancellationApprovedAt || request.cancellationRejectedAt)) return NaN;
+    return durationMs(request.cancellationRequestedAt, request.cancellationApprovedAt || request.cancellationRejectedAt);
+  }
+  return NaN;
+}
+
+function isDashboardAreaCompleted(request, area) {
+  const registration = area === "cadastro" ? getRegistrationStepInfo(request) : null;
+  if (area === "cadastro") return Boolean(registration?.done);
+  if (area === "almox") return Boolean(request.attendedAt);
+  if (area === "cd") return Boolean(request.cdAt);
+  if (area === "compra") return Boolean(request.sapDraftNumber || request.sapRequestNumber || request.purchaseArrivedAt || request.receiptAt);
+  if (area === "recebimento") return Boolean(request.receiptAt);
+  if (area === "retirada") return Boolean(request.withdrawnAt || request.status === "retirado");
+  if (area === "cancelamento") return Boolean(request.cancellationApprovedAt || request.cancellationRejectedAt || request.status === "cancelado");
+  return false;
+}
+
+function isDashboardAreaActive(request, area) {
+  const key = getDashboardStageKey(request);
+  if (area === "cadastro") return key === "cadastro";
+  if (area === "almox") return key === "solicitacao";
+  if (area === "cd") return key === "cd";
+  if (area === "compra") return key === "compra-sap" || key === "espera";
+  if (area === "recebimento") return key === "recebimento";
+  if (area === "retirada") return key === "atendimento";
+  if (area === "cancelamento") return key === "cancelamento";
+  return false;
+}
+
 function createHistorySlaMap(request) {
   const displayStatus = getDisplayStatus(request);
   const steps = [
     { key: "almox", label: "Almoxarifado", owner: request.almoxBy || "Pendente", active: displayStatus === "solicitacao", done: Boolean(request.attendedAt) },
     { key: "cd", label: "CD", owner: request.cdBy || "Pendente", active: displayStatus === "cd", done: Boolean(request.cdAt) },
     { key: "aprovacao", label: "Aprovação", owner: request.purchaseApprovedBy || "Gerente", active: displayStatus === "aprovacao", done: Boolean(request.purchaseAt) || request.status === "reprovado" },
-    { key: "compra", label: "Compra", owner: request.purchaseOrder || request.sapRequestNumber || "Pedido pendente", active: displayStatus === "compra", done: Boolean(request.purchaseArrivedAt || hasPurchaseReceipt(request)) },
+    { key: "compra", label: "Compra", owner: request.purchaseOrder || request.sapRequestNumber || request.sapDraftNumber || "Pedido pendente", active: displayStatus === "compra", done: Boolean(request.purchaseArrivedAt || hasPurchaseReceipt(request)) },
     { key: "recebimento", label: "Recebimento", owner: request.receiptNumber || "Pendente entrada SAP", active: displayStatus === "recebimento", done: Boolean(request.receiptAt) },
   ];
 
@@ -4804,9 +5130,11 @@ function createHistoryTimeline(request) {
             : "Pendente de data de chegada"
           : request.sapRequestNumber
           ? "Solicitação SAP aberta"
-          : "Aguardando solicitação SAP"
+          : request.sapDraftNumber
+          ? "Aguardando aprovação do esboço SAP"
+          : "Aguardando esboço SAP"
         : "Não acionada",
-      owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : request.sapRequestNumber ? `SAP ${request.sapRequestNumber}` : "-",
+      owner: request.purchaseOrder ? `Pedido ${request.purchaseOrder}` : request.sapRequestNumber ? `Solicitação ${request.sapRequestNumber}` : request.sapDraftNumber ? `Esboço ${request.sapDraftNumber}` : "-",
       date: request.purchaseAt,
       sla: getAreaSla(request, "compra"),
       state: request.purchaseAt ? hasPurchaseReceipt(request) ? "done" : isCanceled ? "idle" : "active" : "idle",
@@ -5144,6 +5472,7 @@ function renderPurchaseOverview() {
     const purchaseReceived = items.some((item) => (Number(item.purchaseReceivedQty) || 0) > 0);
     const purchaseMeta = `
           <div><small>Envio para compra</small><b>${formatDateOrDash(request.purchaseAt)}</b></div>
+          <div><small>Esboço SAP</small><b>${request.sapDraftNumber || "-"}</b></div>
           <div><small>Solicitação SAP</small><b>${request.sapRequestNumber || "-"}</b></div>
           <div><small>Chegada real</small><b>${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}</b></div>
           <div><small>Recebimento Almox</small><b>${purchaseReceived ? formatDateOrDash(request.receiptAt) : "-"}</b></div>
@@ -5229,7 +5558,7 @@ function isRequestInHistoryDateRange(request, dateFrom, dateTo) {
 }
 
 function getRequestStageDates(request) {
-  return [request.createdAt, request.attendedAt, request.cdAt, request.purchaseApprovalRequestedAt, request.purchaseApprovedAt, request.purchaseAt, request.purchaseArrivedAt, request.receiptAt, request.pickupAt, request.withdrawnAt].filter(Boolean);
+  return [request.createdAt, request.attendedAt, request.cdAt, request.purchaseApprovalRequestedAt, request.purchaseApprovedAt, request.purchaseAt, request.sapDraftAt, request.sapRequestAt, request.purchaseArrivedAt, request.receiptAt, request.pickupAt, request.withdrawnAt].filter(Boolean);
 }
 
 function formatDateOrDash(value) {
@@ -5538,8 +5867,9 @@ function openPurchaseEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Compra");
   const pendingItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
   const bodyText = buildEmailBody("Relatório de Compra", `Segue registro de compra para a solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${getRequestStatusText(request)}` },
+    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nEsboço SAP: ${request.sapDraftNumber || "-"}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${getRequestStatusText(request)}` },
     { title: "Itens", content: pendingItems.length ? formatEmailItems(pendingItems, (item) => getPurchasePendingQty(item), () => [
+      `ESBOÇO SAP: ${request.sapDraftNumber || "-"}`,
       `SOLICITAÇÃO SAP: ${request.sapRequestNumber || "-"}`,
       `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
       `PREVISÃO DE ENTREGA: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}`,
@@ -5628,7 +5958,7 @@ function createProcessMap(request) {
     { key: "atendimento", label: "Almoxarifado", date: request.attendedAt, done: Boolean(request.attendedAt), active: !isCanceled && request.status === "solicitacao", requested: true },
     { key: "cd", label: "CD", date: request.cdAt, done: Boolean(request.cdAt), active: !isCanceled && request.status === "cd", requested: Boolean(request.cdAt) || request.status === "cd" || request.items.some((item) => getCdPendingQty(item) > 0 || Number(item.cdQty) > 0) },
     { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: !isCanceled && hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
-    { key: "compra", label: "Compra", date: request.purchaseAt, done: Boolean(hasPurchaseReceipt(request)), active: !isCanceled && (displayStatus === "compra" || (displayStatus === "recebimento" && isPurchaseArrivalRegistered(request))), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
+    { key: "compra", label: "Compra", date: request.purchaseAt || request.sapDraftAt || request.sapRequestAt, done: Boolean(hasPurchaseReceipt(request)), active: !isCanceled && (displayStatus === "compra" || (displayStatus === "recebimento" && isPurchaseArrivalRegistered(request))), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapDraftNumber || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
     { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: !isCanceled && displayStatus === "recebimento", requested: Boolean(request.receiptAt) || displayStatus === "recebimento" },
     { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: !isCanceled && hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
     { key: "cancelamento", label: "Cancelamento", date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt, done: request.status === "cancelado" || Boolean(request.cancellationRejectedAt), active: !isCanceled && displayStatus === "cancelamento", requested: Boolean(request.cancellationRequestedAt) || request.status === "cancelamento" || request.status === "cancelado" },

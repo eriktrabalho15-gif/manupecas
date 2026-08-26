@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260819-extrair-sap-visivel" />
+    <link rel="stylesheet" href="./styles.css?v=20260826-sap-draft-flow" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -84,6 +84,7 @@
 
       <nav class="app-tabs" aria-label="Navegação principal">
         <button class="tab-button active" type="button" data-page="request">Pedido</button>
+        <button class="tab-button dashboard-tab" type="button" data-page="dashboard">Dashboard</button>
         <button class="tab-button" type="button" data-page="pending">Solicitações</button>
         <button class="tab-button approval-tab" type="button" data-page="approval" hidden>Aprovação de compra</button>
         <button class="tab-button purchase-tab" type="button" data-page="purchase">Em espera</button>
@@ -221,6 +222,70 @@
         </section>
       </section>
 
+      <section class="page page-dashboard" id="page-dashboard">
+        <section class="dashboard-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">Gerente</p>
+              <h2>Dashboard operacional</h2>
+              <p>Indicadores históricos de solicitações e SLA por área.</p>
+            </div>
+          </div>
+
+          <div class="dashboard-filters dashboard-filters-compact" aria-label="Filtros do dashboard">
+            <label>
+              <span>Prefixo/Frota</span>
+              <input id="dashboard-car-filter" type="search" placeholder="Prefixo ou frota" autocomplete="off" />
+            </label>
+            <label>
+              <span>Área</span>
+              <select id="dashboard-team-filter">
+                <option value="">Todos</option>
+                <option value="pcm">PCM</option>
+                <option value="almox">Almoxarifado</option>
+                <option value="cd">CD</option>
+                <option value="compras">Compras</option>
+                <option value="manager">Gerente</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <label>
+              <span>De</span>
+              <input id="dashboard-date-from" type="date" />
+            </label>
+            <label>
+              <span>Até</span>
+              <input id="dashboard-date-to" type="date" />
+            </label>
+            <button class="secondary-action" type="button" id="dashboard-clear-filters">Limpar filtros</button>
+          </div>
+
+          <div class="dashboard-kpis" id="dashboard-kpis"></div>
+
+          <div class="dashboard-grid">
+            <article class="dashboard-card dashboard-wide">
+              <div class="dashboard-card-head">
+                <div>
+                  <span>Áreas</span>
+                  <strong>Resumo por área</strong>
+                </div>
+              </div>
+              <div class="dashboard-stage-list" id="dashboard-stage-list"></div>
+            </article>
+            <article class="dashboard-card">
+              <div class="dashboard-card-head">
+                <div>
+                  <span>SLA</span>
+                  <strong>Média por área</strong>
+                </div>
+              </div>
+              <div class="dashboard-sla-list" id="dashboard-sla-list"></div>
+            </article>
+          </div>
+
+        </section>
+      </section>
+
       <section class="page page-history" id="page-history">
         <section class="history-panel">
           <div class="queue-header">
@@ -350,6 +415,17 @@
               <h2>Cadastro de item</h2>
               <p>Analise, vincule ou cadastre no SAP.</p>
             </div>
+          </div>
+
+          <div class="part-registration-filters" aria-label="Filtros de cadastro de item">
+            <label>
+              <span>Status</span>
+              <select id="part-registration-status-filter">
+                <option value="">Todos</option>
+                <option value="pending">Pendentes</option>
+                <option value="done">Concluídos</option>
+              </select>
+            </label>
           </div>
 
           <div class="part-registration-list" id="part-registration-list"></div>
@@ -527,6 +603,10 @@
             <div class="purchase-items"></div>
             <button class="action sap-copy-items" type="button">Copiar códigos e quantidades</button>
             <small class="sap-copy-message"></small>
+            <div class="field sap-draft-field">
+              <label>Número do esboço SAP</label>
+              <input class="sap-draft-number" placeholder="Ex.: 9000123456" />
+            </div>
             <div class="field">
               <label>Número da solicitação SAP</label>
               <input class="sap-request-number" placeholder="Ex.: 1000123456" />
@@ -585,7 +665,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260820-filtros-sem-autofill"></script>
+    <script src="./app.js?v=20260826-sap-draft-flow"></script>
   </body>
 </html>
 
