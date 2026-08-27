@@ -164,6 +164,7 @@ const managerBuyItems = document.querySelector("#manager-buy-items");
 const managerServiceRate = document.querySelector("#manager-service-rate");
 const historyFilter = document.querySelector("#history-filter");
 const historyPrefixFilter = document.querySelector("#history-prefix-filter");
+const historyRequesterFilter = document.querySelector("#history-requester-filter");
 const historyDateFrom = document.querySelector("#history-date-from");
 const historyDateTo = document.querySelector("#history-date-to");
 const historyList = document.querySelector("#history-list");
@@ -415,6 +416,7 @@ queuePartFilter?.addEventListener("input", () => render());
 queueCarFilter?.addEventListener("input", () => render());
 historyFilter.addEventListener("input", () => renderHistory());
 historyPrefixFilter.addEventListener("input", () => renderHistory());
+historyRequesterFilter?.addEventListener("change", () => renderHistory());
 historyDateFrom.addEventListener("change", () => renderHistory());
 historyDateTo.addEventListener("change", () => renderHistory());
 [dashboardCarFilter, dashboardTeamFilter, dashboardDateFrom, dashboardDateTo].forEach((control) => {
@@ -1023,6 +1025,7 @@ function normalizeItem(item, requestStatus = "solicitacao") {
     pendingOriginalCode: !hasSapCode ? item.pendingOriginalCode || "" : "",
     pendingPhotoName: !hasSapCode ? item.pendingPhotoName || "" : "",
     pendingPhotoDataUrl: !hasSapCode ? item.pendingPhotoDataUrl || "" : "",
+    pendingPhotos: !hasSapCode ? normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl) : [],
   };
   if (Number.isFinite(Number(item.availableQty)) && Number.isFinite(Number(item.purchaseQty))) {
     return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
@@ -2442,6 +2445,7 @@ function resolvePart(input) {
       pendingOriginalCode: input.dataset.originalCode || "",
       pendingPhotoName: input.dataset.photoName || "",
       pendingPhotoDataUrl: input.dataset.photoDataUrl || "",
+      pendingPhotos: parsePhotoDataset(input.dataset.photos, input.dataset.photoName, input.dataset.photoDataUrl),
     };
   }
   const value = input.value.trim();
@@ -3460,7 +3464,6 @@ async function saveSapRequestNumber(id, card) {
       return;
     }
 
-    prepareMailPopup();
     const now = new Date().toISOString();
     const updatedRequest = {
       ...request,
@@ -3471,7 +3474,6 @@ async function saveSapRequestNumber(id, card) {
     };
     requests = requests.map((item) => (item.id === id ? updatedRequest : item));
     persistRequestsLocally();
-    openPurchaseEmailDraft(updatedRequest, "");
     await saveRequestsSafely("esboço SAP");
     render();
     return;
@@ -4148,15 +4150,18 @@ function updateCopy() {
 function renderHistory() {
   if (!historyList) return;
 
+  syncHistoryRequesterOptions();
   const query = historyFilter.value.trim().toLowerCase();
   const prefixQuery = historyPrefixFilter.value.trim().toLowerCase();
+  const requesterQuery = historyRequesterFilter?.value || "";
   const dateFrom = historyDateFrom.value;
   const dateTo = historyDateTo.value;
   const filtered = requests.filter((request) => {
     const matchesQuery = !query || request.items.some((item) => `${item.code} ${item.description}`.toLowerCase().includes(query));
     const matchesPrefix = !prefixQuery || String(request.bus || "").toLowerCase().includes(prefixQuery);
+    const matchesRequester = !requesterQuery || isHistoryRequesterMatch(request, requesterQuery);
     const matchesDate = isRequestInHistoryDateRange(request, dateFrom, dateTo);
-    return matchesQuery && matchesPrefix && matchesDate;
+    return matchesQuery && matchesPrefix && matchesRequester && matchesDate;
   });
 
   updateHistorySla(filtered);
@@ -4197,6 +4202,43 @@ function renderHistory() {
     });
     historyList.append(row);
   });
+}
+
+function syncHistoryRequesterOptions() {
+  if (!historyRequesterFilter) return;
+  const selected = historyRequesterFilter.value;
+  const accountsList = Object.entries(getAllAccounts())
+    .filter(([, user]) => user.role === "pcm")
+    .map(([email, user]) => ({
+      value: email,
+      label: `${user.name || email} (${email})`,
+    }));
+  const savedRequesters = requests
+    .map((request) => request.requestedByEmail || request.requestedBy)
+    .filter(Boolean)
+    .filter((value) => !accountsList.some((option) => isSameRequester(value, option.value)));
+  const options = [
+    { value: "", label: "Todos os PCMs" },
+    ...accountsList,
+    ...savedRequesters.map((value) => ({ value, label: value })),
+  ];
+  const nextHtml = options.map((option) => `<option value="${escapeAttr(option.value)}">${escapeHtml(option.label)}</option>`).join("");
+  if (historyRequesterFilter.innerHTML !== nextHtml) {
+    historyRequesterFilter.innerHTML = nextHtml;
+    historyRequesterFilter.value = options.some((option) => option.value === selected) ? selected : "";
+  }
+}
+
+function isHistoryRequesterMatch(request, filterValue) {
+  return [request.requestedByEmail, request.requestedBy]
+    .filter(Boolean)
+    .some((value) => isSameRequester(value, filterValue));
+}
+
+function isSameRequester(a, b) {
+  const left = normalizeLogin(String(a || "").replace(/@jtptransportes\.com\.br$/i, ""));
+  const right = normalizeLogin(String(b || "").replace(/@jtptransportes\.com\.br$/i, ""));
+  return left && right && left === right;
 }
 
 function renderUsers() {
@@ -4375,8 +4417,7 @@ function openPartRegistrationDialog(description = "") {
 async function createPartRegistration(data) {
   const description = String(data.get("description") || "").trim();
   const originalCode = String(data.get("originalCode") || "").trim();
-  const photoFile = data.get("partPhoto");
-  const hasPhoto = photoFile && photoFile.name && photoFile.size > 0;
+  const photoFiles = data.getAll("partPhoto").filter((file) => file && file.name && file.size > 0).slice(0, 3);
 
   if (!description || !originalCode) {
     partRegistrationMessage.textContent = "Informe a descrição e o código original.";
@@ -4384,13 +4425,23 @@ async function createPartRegistration(data) {
     return;
   }
 
-  if (hasPhoto && photoFile.size > 900 * 1024) {
-    partRegistrationMessage.textContent = "A foto deve ter até 900 KB.";
+  if (data.getAll("partPhoto").filter((file) => file && file.name && file.size > 0).length > 3) {
+    partRegistrationMessage.textContent = "Anexe no máximo 3 fotos.";
     partRegistrationMessage.className = "password-message error";
     return;
   }
 
-  const photoDataUrl = hasPhoto ? await readFileAsDataUrl(photoFile) : "";
+  const oversizedPhoto = photoFiles.find((file) => file.size > 2 * 1024 * 1024);
+  if (oversizedPhoto) {
+    partRegistrationMessage.textContent = "Cada foto deve ter até 2 MB.";
+    partRegistrationMessage.className = "password-message error";
+    return;
+  }
+
+  const photos = await Promise.all(photoFiles.map(async (file) => ({
+    name: file.name,
+    dataUrl: await readFileAsDataUrl(file),
+  })));
 
   const alreadyPending = partRegistrations.some((item) => {
     return item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase();
@@ -4409,8 +4460,9 @@ async function createPartRegistration(data) {
     id: `CAD-${Date.now()}`,
     description,
     originalCode,
-    photoName: hasPhoto ? photoFile.name : "",
-    photoDataUrl,
+    photoName: photos[0]?.name || "",
+    photoDataUrl: photos[0]?.dataUrl || "",
+    photos,
     requestedBy: currentUser.name || currentUser.label,
     requestedByEmail: currentUser.email,
     createdAt: new Date().toISOString(),
@@ -4442,6 +4494,7 @@ function getPartRegistrationTargetInput() {
 
 function linkPendingRegistrationToInput(registration, input) {
   if (!registration || !input) return;
+  const photos = getRegistrationPhotos(registration);
   input.value = `[Cadastro pendente] ${registration.description}`;
   input.dataset.code = "";
   input.dataset.description = registration.description;
@@ -4449,8 +4502,44 @@ function linkPendingRegistrationToInput(registration, input) {
   input.dataset.originalCode = registration.originalCode;
   input.dataset.photoName = registration.photoName || "";
   input.dataset.photoDataUrl = registration.photoDataUrl || "";
+  input.dataset.photos = JSON.stringify(photos);
   input.setCustomValidity("");
   activePartRegistrationInput = null;
+}
+
+function getRegistrationPhotos(registration) {
+  const photos = Array.isArray(registration?.photos) ? registration.photos : [];
+  const validPhotos = photos
+    .filter((photo) => photo && photo.dataUrl)
+    .map((photo, index) => ({
+      name: photo.name || `foto-peca-${index + 1}.png`,
+      dataUrl: photo.dataUrl,
+    }));
+  if (validPhotos.length) return validPhotos.slice(0, 3);
+  return registration?.photoDataUrl ? [{ name: registration.photoName || "foto-peca.png", dataUrl: registration.photoDataUrl }] : [];
+}
+
+function normalizePhotoList(photos, fallbackName = "", fallbackDataUrl = "") {
+  const parsedPhotos = Array.isArray(photos) ? photos : [];
+  const validPhotos = parsedPhotos
+    .filter((photo) => photo && photo.dataUrl)
+    .map((photo, index) => ({
+      name: photo.name || `foto-peca-${index + 1}.png`,
+      dataUrl: photo.dataUrl,
+    }));
+  if (validPhotos.length) return validPhotos.slice(0, 3);
+  return fallbackDataUrl ? [{ name: fallbackName || "foto-peca.png", dataUrl: fallbackDataUrl }] : [];
+}
+
+function parsePhotoDataset(value, fallbackName = "", fallbackDataUrl = "") {
+  if (value) {
+    try {
+      return normalizePhotoList(JSON.parse(value));
+    } catch {
+      return normalizePhotoList([], fallbackName, fallbackDataUrl);
+    }
+  }
+  return normalizePhotoList([], fallbackName, fallbackDataUrl);
 }
 
 function linkPartRegistrationsToRequest(request) {
@@ -4488,13 +4577,16 @@ function renderPartRegistrations() {
   partRegistrationList.innerHTML = visibleRegistrations
     .map((item) => {
       const done = item.status === "done";
+      const photoLinks = getRegistrationPhotos(item)
+        .map((photo, index) => `<a class="file-link part-photo-link" href="${escapeAttr(photo.dataUrl)}" download="${escapeAttr(photo.name)}" target="_blank" rel="noopener">Foto ${index + 1}: ${escapeHtml(photo.name)}</a>`)
+        .join("");
       return `<article class="part-registration-row ${done ? "done" : ""}" data-id="${escapeAttr(item.id)}">
         <div>
           <small>Descrição PCM</small>
           <strong>${escapeHtml(item.description)}</strong>
           <span>Código/Fabricante: ${escapeHtml(item.originalCode)}</span>
           <small>Solicitado: ${formatDateOrDash(item.createdAt)}</small>
-          ${item.photoDataUrl ? `<a class="file-link" href="${escapeAttr(item.photoDataUrl)}" download="${escapeAttr(item.photoName || "foto-peca.png")}" target="_blank" rel="noopener">Ver foto da peça</a>` : ""}
+          ${photoLinks ? `<div class="part-photo-links">${photoLinks}</div>` : ""}
         </div>
         <label>
           <small>Código SAP</small>
@@ -5789,7 +5881,7 @@ function openPartRegistrationEmailDraft(request) {
     { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${targetLabel}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
     { title: "Itens para Cadastro", content: formatEmailItems(pendingItems, (item) => item.quantity, (item) => [
       `CÓDIGO ORIGINAL: ${item.pendingOriginalCode || "-"}`,
-      `FOTO: ${item.pendingPhotoName ? `${item.pendingPhotoName} - disponível no ManuPeças` : "Não anexada"}`,
+      `FOTO(S): ${formatPendingPhotoNames(item)}`,
       `STATUS: Aguardando cadastro SAP`,
     ]) },
     { title: "Solicitação completa", content: formatEmailItems(request.items, (item) => item.quantity, (item) => [
@@ -5799,6 +5891,12 @@ function openPartRegistrationEmailDraft(request) {
   ]);
 
   openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
+}
+
+function formatPendingPhotoNames(item) {
+  const photos = normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl);
+  if (!photos.length) return "Não anexada";
+  return `${photos.map((photo) => photo.name).join("; ")} - disponível no ManuPeças`;
 }
 
 function openPartRegistrationCompletedEmailDraft(request, part, useExisting = false) {

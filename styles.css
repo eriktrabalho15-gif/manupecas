@@ -1036,6 +1036,31 @@ body[data-view="app"] .login-screen {
   min-width: min(360px, 100%);
 }
 
+.queue-header.history-header {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.75fr) repeat(3, minmax(180px, 1fr)) minmax(230px, 0.85fr);
+  align-items: end;
+  gap: 14px;
+}
+
+.queue-header.history-header > div:first-child {
+  min-width: 260px;
+}
+
+.queue-header.history-header h2 {
+  max-width: none;
+  line-height: 1;
+}
+
+.queue-header.history-header .field {
+  min-width: 0;
+}
+
+.queue-header.history-header input,
+.queue-header.history-header select {
+  width: 100%;
+}
+
 .history-date-filters {
   display: grid;
   grid-template-columns: repeat(2, minmax(130px, 1fr));
@@ -1668,6 +1693,22 @@ body[data-view="app"] .login-screen {
   color: var(--muted);
 }
 
+.part-photo-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.part-photo-link {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 8px 10px;
+  font-weight: 850;
+}
+
 .user-password-field input,
 .user-corporate-field input,
 .user-role-field select,
@@ -1816,6 +1857,28 @@ body[data-view="app"] .login-screen {
 .queue-header p {
   margin-bottom: 0;
   color: var(--muted);
+}
+
+.queue-header.history-header {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(170px, 1fr));
+  align-items: end;
+}
+
+.queue-header.history-header > div:first-child {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.queue-header.history-header h2 {
+  max-width: none;
+  white-space: normal;
+  line-height: 1.04;
+}
+
+.queue-header.history-header .history-search,
+.queue-header.history-header .history-date-filters {
+  min-width: 0;
 }
 
 .filters {
@@ -2582,6 +2645,14 @@ body[data-role="admin"] .request-card {
     grid-template-columns: 1fr;
   }
 
+  .queue-header.history-header {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .queue-header.history-header > div:first-child {
+    grid-column: 1 / -1;
+  }
+
   .history-sla,
   .history-timeline,
   .history-summary,
@@ -2646,6 +2717,15 @@ body[data-role="admin"] .request-card {
 
   .app-shell {
     padding: 12px 12px 96px;
+  }
+
+  .queue-header.history-header {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .history-date-filters {
+    grid-template-columns: 1fr;
   }
 
   .login-screen {

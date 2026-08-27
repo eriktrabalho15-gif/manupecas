@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260826-sap-draft-flow" />
+    <link rel="stylesheet" href="./styles.css?v=20260827-history-header-fix" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -288,7 +288,7 @@
 
       <section class="page page-history" id="page-history">
         <section class="history-panel">
-          <div class="queue-header">
+          <div class="queue-header history-header">
             <div>
               <p class="eyebrow">Gerente</p>
               <h2>Histórico de solicitações</h2>
@@ -301,6 +301,12 @@
             <div class="field history-search">
               <label for="history-prefix-filter">Filtrar por prefixo</label>
               <input id="history-prefix-filter" placeholder="Prefixo ou Frota" />
+            </div>
+            <div class="field history-search">
+              <label for="history-requester-filter">Filtrar por solicitante</label>
+              <select id="history-requester-filter">
+                <option value="">Todos os PCMs</option>
+              </select>
             </div>
             <div class="history-date-filters" aria-label="Filtrar por data dos atendimentos">
               <div class="field">
@@ -496,8 +502,8 @@
         </div>
         <div class="field">
           <label for="part-registration-photo">Foto da peça</label>
-          <input id="part-registration-photo" name="partPhoto" type="file" accept=".jpg,.jpeg,.png,.webp" />
-          <small class="field-hint">Opcional. Use imagem leve para ajudar no cadastro.</small>
+          <input id="part-registration-photo" name="partPhoto" type="file" accept=".jpg,.jpeg,.png,.webp" multiple />
+          <small class="field-hint">Opcional. Anexe até 3 imagens, com até 2 MB cada.</small>
         </div>
         <p class="password-message" id="part-registration-message"></p>
         <button class="primary-action" type="submit">Enviar para cadastro</button>
@@ -665,7 +671,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260826-sap-draft-flow"></script>
+    <script src="./app.js?v=20260827-history-header-fix"></script>
   </body>
 </html>
 
