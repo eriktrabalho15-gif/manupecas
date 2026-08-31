@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260827-history-header-fix" />
+    <link rel="stylesheet" href="./styles.css?v=20260831-history-date-fix" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -53,14 +53,8 @@
 
     <main class="app-shell" id="app-shell">
       <header class="topbar">
-        <div class="brand-cluster">
-          <div>
-            <p class="eyebrow">JTP Transportes</p>
-            <h1>ManuPeças</h1>
-            <p class="user-greeting" id="user-greeting"></p>
-          </div>
-        </div>
         <div class="session-box">
+          <span class="user-greeting" id="user-greeting"></span>
           <span id="session-label"></span>
           <span class="supabase-status" id="supabase-status">Supabase: verificando</span>
           <div class="notification-wrap">
@@ -83,15 +77,26 @@
       </header>
 
       <nav class="app-tabs" aria-label="Navegação principal">
-        <button class="tab-button active" type="button" data-page="request">Pedido</button>
-        <button class="tab-button dashboard-tab" type="button" data-page="dashboard">Dashboard</button>
-        <button class="tab-button" type="button" data-page="pending">Solicitações</button>
-        <button class="tab-button approval-tab" type="button" data-page="approval" hidden>Aprovação de compra</button>
-        <button class="tab-button purchase-tab" type="button" data-page="purchase">Em espera</button>
-        <button class="tab-button part-admin-tab" type="button" data-page="part-admin">Cadastro de Item</button>
-        <button class="tab-button email-admin-tab" type="button" data-page="email-admin">E-mail</button>
-        <button class="tab-button admin-tab" type="button" data-page="admin">Acessos</button>
-        <button class="tab-button history-tab" type="button" data-page="history">Histórico</button>
+        <div class="side-nav-head">
+          <div class="side-nav-brand">
+            <img src="./logo-jtp.png" alt="" />
+            <div>
+              <strong>ManuPeças</strong>
+              <span>Operações Seguras</span>
+            </div>
+          </div>
+          <button class="nav-toggle" type="button" id="side-nav-toggle" aria-label="Ocultar menu" aria-expanded="true">«</button>
+        </div>
+        <button class="tab-button active" type="button" data-page="request" data-short="PED"><span>Pedido</span></button>
+        <button class="tab-button dashboard-tab" type="button" data-page="dashboard" data-short="DASH"><span>Dashboard</span></button>
+        <button class="tab-button" type="button" data-page="pending" data-short="SOL"><span>Solicitações</span></button>
+        <button class="tab-button approval-tab" type="button" data-page="approval" data-short="APR" hidden><span>Aprovação de compra</span></button>
+        <button class="tab-button purchase-tab" type="button" data-page="purchase" data-short="ESP"><span>Em espera</span></button>
+        <button class="tab-button" type="button" data-page="wms" data-short="WMS"><span>WMS</span></button>
+        <button class="tab-button part-admin-tab" type="button" data-page="part-admin" data-short="CAD"><span>Cadastro</span></button>
+        <button class="tab-button email-admin-tab" type="button" data-page="email-admin" data-short="MAIL"><span>E-mail</span></button>
+        <button class="tab-button admin-tab" type="button" data-page="admin" data-short="ACC"><span>Acessos</span></button>
+        <button class="tab-button history-tab" type="button" data-page="history" data-short="HIST"><span>Histórico</span></button>
       </nav>
 
       <section class="page page-request active" id="page-request">
@@ -283,6 +288,74 @@
             </article>
           </div>
 
+        </section>
+      </section>
+
+      <section class="page page-wms" id="page-wms">
+        <section class="wms-panel">
+          <div class="queue-header">
+            <div>
+              <p class="eyebrow">WMS</p>
+              <h2>Localização de peças</h2>
+              <p>Consulte, aloque e desaloque itens do CD e BP.</p>
+            </div>
+          </div>
+
+          <div class="wms-toolbar" aria-label="Filtros do WMS">
+            <label>
+              <span>Base</span>
+              <select id="wms-area-filter">
+                <option value="bp">BP / Almoxarifado</option>
+                <option value="cd">CD</option>
+              </select>
+            </label>
+            <label>
+              <span>Peça</span>
+              <div class="part-search">
+                <input id="wms-search-filter" type="search" placeholder="Digite código ou descrição" autocomplete="off" />
+                <div class="suggestions" id="wms-search-suggestions" role="listbox"></div>
+              </div>
+            </label>
+            <label>
+              <span>Prateleira</span>
+              <input id="wms-shelf-filter" type="search" placeholder="Prédio, andar, apto ou WMS" autocomplete="off" />
+            </label>
+            <button class="secondary-action compact wms-export-button" type="button" id="wms-export-button">Exportar Excel</button>
+          </div>
+
+          <form class="wms-editor" id="wms-editor-form">
+            <div class="wms-editor-head">
+              <div>
+                <strong>Alocar item</strong>
+                <span id="wms-permission-message"></span>
+              </div>
+            </div>
+            <div class="wms-editor-grid">
+              <label class="wms-part-field">
+                <span>Peça</span>
+                <div class="part-search">
+                  <input id="wms-edit-code" name="code" placeholder="Código ou descrição" autocomplete="off" />
+                  <div class="suggestions" id="wms-edit-suggestions" role="listbox"></div>
+                </div>
+              </label>
+              <label>
+                <span>Localização</span>
+                <input id="wms-edit-location" name="location" placeholder="Ex.: 01.01.01.01" />
+              </label>
+              <label>
+                <span>Saldo alocado</span>
+                <input id="wms-edit-balance" name="balance" type="number" min="0" step="1" placeholder="Ex.: 10" />
+              </label>
+              <label class="wms-stock-field">
+                <span>Estoque</span>
+                <input id="wms-edit-stock" name="stockType" placeholder="Ex.: LEVES" />
+              </label>
+            </div>
+            <button class="primary-action compact" type="submit">Alocar no WMS</button>
+          </form>
+
+          <div class="wms-summary" id="wms-summary"></div>
+          <div class="wms-list" id="wms-list"></div>
         </section>
       </section>
 
@@ -671,7 +744,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260831-storage-cache-fix"></script>
+    <script src="./app.js?v=20260831-history-date-fix"></script>
   </body>
 </html>
 

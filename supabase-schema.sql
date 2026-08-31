@@ -33,6 +33,12 @@ create table if not exists public.manupecas_email_settings (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.manupecas_wms_overrides (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.itens (
   id uuid primary key default gen_random_uuid(),
   codigo_sap text unique,
@@ -222,6 +228,7 @@ alter table public.manupecas_deleted_users enable row level security;
 alter table public.manupecas_custom_parts enable row level security;
 alter table public.manupecas_part_registrations enable row level security;
 alter table public.manupecas_email_settings enable row level security;
+alter table public.manupecas_wms_overrides enable row level security;
 alter table public.itens enable row level security;
 alter table public.solicitacoes enable row level security;
 alter table public.solicitacao_itens enable row level security;
@@ -235,6 +242,7 @@ drop policy if exists "manupecas_deleted_users_public_all" on public.manupecas_d
 drop policy if exists "manupecas_custom_parts_public_all" on public.manupecas_custom_parts;
 drop policy if exists "manupecas_part_registrations_public_all" on public.manupecas_part_registrations;
 drop policy if exists "manupecas_email_settings_public_all" on public.manupecas_email_settings;
+drop policy if exists "manupecas_wms_overrides_public_all" on public.manupecas_wms_overrides;
 drop policy if exists "itens_public_all" on public.itens;
 drop policy if exists "solicitacoes_public_all" on public.solicitacoes;
 drop policy if exists "solicitacao_itens_public_all" on public.solicitacao_itens;
@@ -279,6 +287,13 @@ with check (true);
 
 create policy "manupecas_email_settings_public_all"
 on public.manupecas_email_settings
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "manupecas_wms_overrides_public_all"
+on public.manupecas_wms_overrides
 for all
 to anon
 using (true)

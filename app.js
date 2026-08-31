@@ -1,6 +1,7 @@
 ﻿const REQUESTS_KEY = "pecas-transporte-solicitacoes-v4";
 const SESSION_KEY = "pecas-transporte-sessao";
 const THEME_KEY = "pecas-transporte-tema";
+const SIDE_NAV_COLLAPSED_KEY = "pecas-transporte-menu-lateral-oculto";
 const USERS_KEY = "pecas-transporte-usuarios";
 const DELETED_USERS_KEY = "pecas-transporte-usuarios-excluidos";
 const NOTIFICATION_READ_KEY = "pecas-transporte-notificacoes-lidas";
@@ -8,6 +9,8 @@ const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
 const REQUEST_SUBMIT_LOCK_KEY = "pecas-transporte-envio-solicitacao-lock";
+const WMS_OVERRIDES_KEY = "pecas-transporte-wms-ajustes";
+const WMS_OVERRIDES_FALLBACK_ID = "wms-overrides";
 const REQUEST_CACHE_FALLBACK_LIMITS = [120, 60, 25];
 const PART_REGISTRATION_CACHE_FALLBACK_LIMITS = [120, 60, 25];
 const supabaseClient = window.manuPecasSupabase || null;
@@ -103,6 +106,7 @@ let deletedUsers = loadDeletedUsers();
 let customParts = loadCustomParts();
 let partRegistrations = loadPartRegistrations();
 let emailSettings = loadEmailSettings();
+let wmsOverrides = loadWmsOverrides();
 let currentUser = loadSession();
 let currentFilter = "solicitacao";
 let currentPage = "request";
@@ -111,6 +115,10 @@ let userAccessFeedback = null;
 let pendingSupabaseWrites = [];
 let preparedMailPopup = null;
 let isSubmittingRequest = false;
+let completePartOptionsCache = null;
+let wmsPartOptionsCache = {};
+let wmsPartDescriptionCache = null;
+let wmsActivePieceSearch = null;
 
 window.addEventListener("error", (event) => {
   setSupabaseStatus("error", "Erro no app");
@@ -152,6 +160,7 @@ const partRegistrationDialog = document.querySelector("#part-registration-dialog
 const partRegistrationForm = document.querySelector("#part-registration-form");
 const partRegistrationClose = document.querySelector("#part-registration-close");
 const partRegistrationMessage = document.querySelector("#part-registration-message");
+const sideNavToggle = document.querySelector("#side-nav-toggle");
 const tabButtons = document.querySelectorAll(".tab-button");
 const pages = document.querySelectorAll(".page");
 const filterButtons = document.querySelectorAll(".filter-button");
@@ -180,6 +189,19 @@ const dashboardClearFilters = document.querySelector("#dashboard-clear-filters")
 const dashboardKpis = document.querySelector("#dashboard-kpis");
 const dashboardStageList = document.querySelector("#dashboard-stage-list");
 const dashboardSlaList = document.querySelector("#dashboard-sla-list");
+const wmsAreaFilter = document.querySelector("#wms-area-filter");
+const wmsSearchFilter = document.querySelector("#wms-search-filter");
+const wmsSearchSuggestions = document.querySelector("#wms-search-suggestions");
+const wmsStreetFilter = document.querySelector("#wms-street-filter");
+const wmsShelfFilter = document.querySelector("#wms-shelf-filter");
+const wmsExportButton = document.querySelector("#wms-export-button");
+const wmsEditorForm = document.querySelector("#wms-editor-form");
+const wmsEditCode = document.querySelector("#wms-edit-code");
+const wmsEditDescription = document.querySelector("#wms-edit-description");
+const wmsEditSuggestions = document.querySelector("#wms-edit-suggestions");
+const wmsPermissionMessage = document.querySelector("#wms-permission-message");
+const wmsSummary = document.querySelector("#wms-summary");
+const wmsList = document.querySelector("#wms-list");
 const userForm = document.querySelector("#user-form");
 const userList = document.querySelector("#user-list");
 const emailSettingsForm = document.querySelector("#email-settings-form");
@@ -192,6 +214,7 @@ const slaService = document.querySelector("#sla-service");
 const slaBuy = document.querySelector("#sla-buy");
 
 applyTheme(localStorage.getItem(THEME_KEY) || "light");
+applySideNavState(localStorage.getItem(SIDE_NAV_COLLAPSED_KEY) === "true");
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -232,6 +255,12 @@ logoutButton.addEventListener("click", () => {
 themeToggle.addEventListener("click", () => {
   const nextTheme = body.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(nextTheme);
+});
+
+sideNavToggle?.addEventListener("click", () => {
+  const collapsed = body.dataset.navCollapsed !== "true";
+  applySideNavState(collapsed);
+  safeSetStorageItem(SIDE_NAV_COLLAPSED_KEY, String(collapsed), "preferência do menu lateral");
 });
 
 notificationButton.addEventListener("click", (event) => {
@@ -431,6 +460,36 @@ dashboardClearFilters?.addEventListener("click", () => {
   });
   renderDashboard();
 });
+wmsAreaFilter?.addEventListener("change", () => {
+  closeWmsSearchSuggestions();
+  closeWmsPartSuggestions();
+  renderWms();
+});
+wmsSearchFilter?.addEventListener("input", () => {
+  renderWms();
+  renderWmsSearchSuggestions();
+});
+wmsSearchFilter?.addEventListener("focus", () => renderWmsSearchSuggestions());
+wmsSearchFilter?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeWmsSearchSuggestions();
+});
+wmsSearchSuggestions?.addEventListener("mousedown", handleWmsSearchSuggestionSelect);
+wmsStreetFilter?.addEventListener("input", () => renderWms());
+wmsShelfFilter?.addEventListener("input", () => renderWms());
+wmsExportButton?.addEventListener("click", exportWmsToExcel);
+wmsEditCode?.addEventListener("input", () => {
+  wmsEditCode.dataset.code = "";
+  wmsEditCode.dataset.description = "";
+  syncWmsDescriptionFromTypedValue(false);
+  renderWmsPartSuggestions();
+});
+wmsEditCode?.addEventListener("focus", () => renderWmsPartSuggestions());
+wmsEditCode?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeWmsPartSuggestions();
+});
+wmsEditSuggestions?.addEventListener("mousedown", handleWmsPartSuggestionSelect);
+wmsEditorForm?.addEventListener("submit", handleWmsAllocationSubmit);
+wmsList?.addEventListener("click", handleWmsListClick);
 userForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const data = new FormData(userForm);
@@ -700,6 +759,7 @@ function setPage(page) {
   if (page === "history") renderHistory();
   if (page === "approval") renderApprovalQueue();
   if (page === "purchase") renderPurchaseOverview();
+  if (page === "wms") renderWms();
   if (page === "admin") renderUsers();
   if (page === "part-admin") renderPartRegistrations();
   if (page === "email-admin") renderEmailSettings();
@@ -1385,7 +1445,7 @@ async function syncFromSupabase() {
 
   try {
     setSupabaseStatus("saving", "Supabase: sincronizando");
-    const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations, remoteStructuredParts, remoteEmailSettings] = await Promise.all([
+    const [remoteRequests, remoteUsers, remoteDeletedUsers, remoteCustomParts, remotePartRegistrations, remoteStructuredParts, remoteEmailSettings, remoteWmsOverrides] = await Promise.all([
       loadSupabaseRows("manupecas_requests", "id"),
       loadSupabaseRows("manupecas_users", "email"),
       loadSupabaseDeletedUsers(),
@@ -1393,6 +1453,7 @@ async function syncFromSupabase() {
       loadSupabaseRows("manupecas_part_registrations", "id"),
       loadStructuredItems(),
       loadEmailSettingsFromSupabase(),
+      loadWmsOverridesFromSupabase(),
     ]);
 
     let syncedRequests = remoteRequests;
@@ -1418,10 +1479,12 @@ async function syncFromSupabase() {
     }
     if (remoteCustomParts) {
       customParts = remoteCustomParts;
+      clearWmsPartCache();
       safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
     }
     if (remoteStructuredParts) {
       customParts = mergeCustomParts(customParts, remoteStructuredParts);
+      clearWmsPartCache();
       safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
     }
     if (remotePartRegistrations) {
@@ -1434,6 +1497,11 @@ async function syncFromSupabase() {
     if (remoteEmailSettings) {
       emailSettings = normalizeEmailSettings(remoteEmailSettings);
       safeSetStorageItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings), "configurações de e-mail");
+    }
+    if (remoteWmsOverrides) {
+      wmsOverrides = mergeWmsOverrides(wmsOverrides, remoteWmsOverrides);
+      clearWmsPartCache();
+      saveWmsOverridesLocalCache();
     }
     setSupabaseStatus("ok", "Supabase: conectado");
   } catch (error) {
@@ -1605,6 +1673,27 @@ async function loadEmailSettingsFromSupabase() {
     return null;
   }
   return data?.data || null;
+}
+
+async function loadWmsOverridesFromSupabase() {
+  const primaryRows = await loadSupabaseRows("manupecas_wms_overrides", "id");
+  if (primaryRows) return primaryRows;
+
+  const { data, error } = await supabaseClient
+    .from("manupecas_email_settings")
+    .select("id, data, updated_at")
+    .eq("id", WMS_OVERRIDES_FALLBACK_ID)
+    .maybeSingle();
+  if (error) {
+    console.warn("Erro ao carregar WMS reserva:", error.message);
+    return null;
+  }
+  const fallback = data?.data?.wmsOverrides || data?.data?.locations || null;
+  if (!fallback) return null;
+  return [
+    { id: "bp", area: "bp", locations: fallback.bp || {}, updatedAt: data.data.updatedAt || data.updated_at || "" },
+    { id: "cd", area: "cd", locations: fallback.cd || {}, updatedAt: data.data.updatedAt || data.updated_at || "" },
+  ];
 }
 
 function upsertSupabaseRows(table, keyField, rows) {
@@ -2341,6 +2430,7 @@ function loadCustomParts() {
 }
 
 function saveCustomParts() {
+  clearWmsPartCache();
   safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
   upsertSupabaseRows("manupecas_custom_parts", "code", customParts);
   mirrorCustomPartsToStructuredTable(customParts);
@@ -2357,6 +2447,110 @@ function loadPartRegistrations() {
 function savePartRegistrations() {
   savePartRegistrationsLocalCache();
   upsertSupabaseRows("manupecas_part_registrations", "id", partRegistrations);
+}
+
+function loadWmsOverrides() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WMS_OVERRIDES_KEY) || "{}");
+    return normalizeWmsOverrides(stored);
+  } catch {
+    return { bp: {}, cd: {} };
+  }
+}
+
+function normalizeWmsOverrides(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    bp: normalizeWmsAreaOverrides(source.bp),
+    cd: normalizeWmsAreaOverrides(source.cd),
+  };
+}
+
+function normalizeWmsAreaOverrides(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.entries(source).reduce((acc, [code, locations]) => {
+    const cleanCode = normalizeCode(code);
+    if (!cleanCode || !Array.isArray(locations)) return acc;
+    acc[cleanCode] = locations.map(normalizeWmsLocation).filter((location) => location.location);
+    return acc;
+  }, {});
+}
+
+function normalizeWmsLocation(location) {
+  const source = location && typeof location === "object" ? location : {};
+  const balance = source.balance ?? source.saldo ?? "";
+  const countedAt = source.countedAt || source.balanceUpdatedAt || source.saldoAtualizadoEm || "";
+  return {
+    location: String(source.location || "").trim(),
+    street: String(source.street || "").trim(),
+    building: String(source.building || "").trim(),
+    floor: String(source.floor || "").trim(),
+    slot: String(source.slot || "").trim(),
+    stockType: String(source.stockType || source.stock || "").trim(),
+    description: String(source.description || "").trim(),
+    balance: balance === null || balance === undefined ? "" : String(balance).trim(),
+    countedAt,
+    countedBy: source.countedBy || source.balanceUpdatedBy || source.saldoAtualizadoPor || "",
+    obs: String(source.obs || "").trim(),
+    updatedAt: source.updatedAt || "",
+    updatedBy: source.updatedBy || "",
+  };
+}
+
+function mergeWmsOverrides(localOverrides, remoteRows) {
+  const merged = normalizeWmsOverrides(localOverrides);
+  (remoteRows || []).forEach((row) => {
+    const area = row.area === "cd" ? "cd" : row.area === "bp" ? "bp" : row.id;
+    if (area !== "bp" && area !== "cd") return;
+    const localUpdatedAt = merged[area]?._updatedAt || "";
+    const remoteUpdatedAt = row.updatedAt || "";
+    if (!merged[area] || remoteUpdatedAt >= localUpdatedAt) {
+      merged[area] = normalizeWmsAreaOverrides(row.locations || row.data || {});
+      merged[area]._updatedAt = remoteUpdatedAt;
+    }
+  });
+  return normalizeWmsOverrides(merged);
+}
+
+function saveWmsOverridesLocalCache() {
+  safeSetStorageItem(WMS_OVERRIDES_KEY, JSON.stringify(normalizeWmsOverrides(wmsOverrides)), "ajustes locais de WMS");
+}
+
+function saveWmsOverrides() {
+  const now = new Date().toISOString();
+  wmsOverrides = normalizeWmsOverrides(wmsOverrides);
+  clearWmsPartCache();
+  saveWmsOverridesLocalCache();
+  return trackSupabaseWrite(saveWmsOverridesToSupabase(now), "WMS");
+}
+
+function clearWmsPartCache() {
+  completePartOptionsCache = null;
+  wmsPartOptionsCache = {};
+  wmsPartDescriptionCache = null;
+}
+
+async function saveWmsOverridesToSupabase(updatedAt) {
+  if (!supabaseClient) return { data: null, error: null };
+  const normalized = normalizeWmsOverrides(wmsOverrides);
+  const primaryPayload = [
+    { id: "bp", data: { id: "bp", area: "bp", locations: normalized.bp, updatedAt }, updated_at: updatedAt },
+    { id: "cd", data: { id: "cd", area: "cd", locations: normalized.cd, updatedAt }, updated_at: updatedAt },
+  ];
+  const primary = await supabaseClient
+    .from("manupecas_wms_overrides")
+    .upsert(primaryPayload, { onConflict: "id" });
+  if (!primary.error) return primary;
+
+  console.warn("Tabela WMS indisponível. Gravando WMS no armazenamento reserva:", primary.error.message || primary.error);
+  const fallback = await supabaseClient
+    .from("manupecas_email_settings")
+    .upsert({
+      id: WMS_OVERRIDES_FALLBACK_ID,
+      data: { id: WMS_OVERRIDES_FALLBACK_ID, wmsOverrides: normalized, updatedAt },
+      updated_at: updatedAt,
+    }, { onConflict: "id" });
+  return fallback.error ? fallback : { data: fallback.data, error: null };
 }
 
 function getAvailableParts() {
@@ -4117,8 +4311,685 @@ function buildCdResponseText(items) {
   return "";
 }
 
+function getBaseWmsData(area) {
+  return area === "cd" ? cdWmsLocations : wmsLocations;
+}
+
+function getWmsAreaLabel(area) {
+  return area === "cd" ? "CD" : "BP / Almoxarifado";
+}
+
+function canEditWmsArea(area) {
+  if (currentUser?.role === "admin") return true;
+  if (area === "cd") return currentUser?.role === "cd";
+  return currentUser?.role === "almox";
+}
+
+function getEffectiveWmsLocations(area, code) {
+  const cleanCode = normalizeCode(code);
+  const areaOverrides = wmsOverrides?.[area] || {};
+  if (Object.prototype.hasOwnProperty.call(areaOverrides, cleanCode)) {
+    return (areaOverrides[cleanCode] || []).map(normalizeWmsLocation).filter((location) => location.location);
+  }
+  return ((getBaseWmsData(area)[cleanCode] || [])).map(normalizeWmsLocation).filter((location) => location.location);
+}
+
+function setEffectiveWmsLocations(area, code, locations) {
+  const cleanCode = normalizeCode(code);
+  if (!cleanCode || (area !== "bp" && area !== "cd")) return;
+  if (!wmsOverrides[area]) wmsOverrides[area] = {};
+  wmsOverrides[area][cleanCode] = (locations || []).map(normalizeWmsLocation).filter((location) => location.location);
+}
+
+function getWmsDescription(area, code, locations = []) {
+  const fromLocation = locations.find((location) => location.description)?.description;
+  if (fromLocation) return fromLocation;
+  const partDescription = getWmsPartDescriptionByCode().get(normalizeCode(code));
+  if (partDescription) return partDescription;
+  const baseLocation = (getBaseWmsData(area)[normalizeCode(code)] || []).find((location) => location.description);
+  return baseLocation?.description || "";
+}
+
+function getWmsPartDescriptionByCode() {
+  if (wmsPartDescriptionCache) return wmsPartDescriptionCache;
+  wmsPartDescriptionCache = getAvailableParts().reduce((acc, part) => {
+    const code = normalizeCode(part.code);
+    if (code && part.description && !acc.has(code)) acc.set(code, part.description);
+    return acc;
+  }, new Map());
+  return wmsPartDescriptionCache;
+}
+
+function getCompletePartOptions() {
+  if (completePartOptionsCache) return completePartOptionsCache;
+  const byCode = new Map();
+  getAvailableParts().forEach((part) => {
+    const code = normalizeCode(part.code);
+    if (!code) return;
+    byCode.set(code, { code, description: part.description || "" });
+  });
+  completePartOptionsCache = [...byCode.values()].sort((a, b) => String(a.code).localeCompare(String(b.code), "pt-BR", { numeric: true }));
+  return completePartOptionsCache;
+}
+
+function getWmsPartOptions(area) {
+  if (wmsPartOptionsCache[area]) return wmsPartOptionsCache[area];
+  const byCode = new Map();
+  getCompletePartOptions().forEach((part) => {
+    byCode.set(part.code, part);
+  });
+  getWmsRows(area).forEach((part) => {
+    const code = normalizeCode(part.code);
+    if (!code) return;
+    const existing = byCode.get(code);
+    byCode.set(code, {
+      code,
+      description: existing?.description || part.description || "",
+    });
+  });
+  wmsPartOptionsCache[area] = [...byCode.values()].sort((a, b) => String(a.code).localeCompare(String(b.code), "pt-BR", { numeric: true }));
+  return wmsPartOptionsCache[area];
+}
+
+function findPartOptions(options, query, limit = 12) {
+  const cleanQuery = normalizeSearchText(query);
+  if (cleanQuery.length < 2) return [];
+  const compactQuery = normalizeSearchCompact(query);
+  const starts = [];
+  const contains = [];
+
+  for (const part of options) {
+    const codeText = normalizeSearchText(part.code);
+    const descriptionText = normalizeSearchText(part.description || "");
+    const codeCompact = normalizeSearchCompact(part.code);
+    const descriptionCompact = normalizeSearchCompact(part.description || "");
+    if (codeText.startsWith(cleanQuery) || descriptionText.startsWith(cleanQuery) || codeCompact.startsWith(compactQuery)) {
+      starts.push(part);
+    } else if (codeText.includes(cleanQuery) || descriptionText.includes(cleanQuery) || descriptionCompact.includes(compactQuery)) {
+      contains.push(part);
+    }
+    if (starts.length >= limit) break;
+  }
+
+  return [...starts, ...contains].slice(0, limit);
+}
+
+function findWmsParts(area, query, limit = 12) {
+  return findPartOptions(getWmsPartOptions(area), query, limit);
+}
+
+function findCompleteParts(query, limit = 12) {
+  return findPartOptions(getCompletePartOptions(), query, limit);
+}
+
+function closeWmsPartSuggestions() {
+  wmsEditSuggestions?.classList.remove("open");
+}
+
+function getWmsCurrentArea() {
+  return wmsAreaFilter?.value === "cd" ? "cd" : "bp";
+}
+
+function getExactWmsPart(area, value) {
+  return getExactPartOption(getWmsPartOptions(area), value);
+}
+
+function getExactCompletePart(value) {
+  return getExactPartOption(getCompletePartOptions(), value);
+}
+
+function getExactPartOption(options, value) {
+  const typed = String(value || "").trim();
+  const typedCode = normalizeCode(typed);
+  const normalized = normalizeSearchText(typed);
+  const compact = normalizeSearchCompact(typed);
+  return options.find((part) => {
+    const full = normalizeSearchText(`${part.code} - ${part.description || ""}`);
+    return normalizeCode(part.code) === typedCode
+      || normalizeSearchText(part.description || "") === normalized
+      || normalizeSearchText(part.code) === normalized
+      || normalizeSearchCompact(`${part.code}${part.description || ""}`) === compact
+      || full === normalized;
+  }) || null;
+}
+
+function applyWmsPartSelection(part) {
+  if (!wmsEditCode || !part) return;
+  wmsEditCode.value = `${part.code} - ${part.description || "Sem descrição cadastrada"}`;
+  wmsEditCode.dataset.code = part.code;
+  wmsEditCode.dataset.description = part.description || "";
+  if (wmsEditDescription) wmsEditDescription.value = part.description || "";
+  closeWmsPartSuggestions();
+}
+
+function syncWmsDescriptionFromTypedValue(force = true) {
+  if (!wmsEditCode) return null;
+  const exact = getExactCompletePart(wmsEditCode.value);
+  if (!exact) return null;
+  wmsEditCode.dataset.code = exact.code;
+  wmsEditCode.dataset.description = exact.description || "";
+  if (wmsEditDescription && (force || !wmsEditDescription.value.trim())) {
+    wmsEditDescription.value = exact.description || "";
+  }
+  return exact;
+}
+
+function renderWmsPartSuggestions() {
+  if (!wmsEditCode || !wmsEditSuggestions) return;
+  const query = wmsEditCode.value.trim();
+  wmsEditSuggestions.innerHTML = "";
+  if (query.length < 2) {
+    closeWmsPartSuggestions();
+    return;
+  }
+
+  const matches = findCompleteParts(query);
+  matches.forEach((part) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.wmsCode = part.code;
+    button.dataset.wmsDescription = part.description || "";
+    button.innerHTML = `<strong>${escapeHtml(part.code)}</strong><span>${escapeHtml(part.description || "Sem descrição cadastrada")}</span>`;
+    wmsEditSuggestions.append(button);
+  });
+  wmsEditSuggestions.classList.toggle("open", matches.length > 0);
+}
+
+function handleWmsPartSuggestionSelect(event) {
+  const button = event.target.closest("[data-wms-code]");
+  if (!button) return;
+  event.preventDefault();
+  applyWmsPartSelection({
+    code: button.dataset.wmsCode,
+    description: button.dataset.wmsDescription || "",
+  });
+}
+
+function closeWmsSearchSuggestions() {
+  wmsSearchSuggestions?.classList.remove("open");
+}
+
+function renderWmsSearchSuggestions() {
+  if (!wmsSearchFilter || !wmsSearchSuggestions) return;
+  const query = wmsSearchFilter.value.trim();
+  wmsSearchSuggestions.innerHTML = "";
+  if (query.length < 2) {
+    closeWmsSearchSuggestions();
+    return;
+  }
+
+  const matches = findWmsParts(getWmsCurrentArea(), query);
+  matches.forEach((part) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.wmsSearchCode = part.code;
+    button.dataset.wmsSearchDescription = part.description || "";
+    button.innerHTML = `<strong>${escapeHtml(part.code)}</strong><span>${escapeHtml(part.description || "Sem descrição cadastrada")}</span>`;
+    wmsSearchSuggestions.append(button);
+  });
+  wmsSearchSuggestions.classList.toggle("open", matches.length > 0);
+}
+
+function handleWmsSearchSuggestionSelect(event) {
+  const button = event.target.closest("[data-wms-search-code]");
+  if (!button || !wmsSearchFilter) return;
+  event.preventDefault();
+  const description = button.dataset.wmsSearchDescription || "";
+  wmsSearchFilter.value = description
+    ? `${button.dataset.wmsSearchCode} - ${description}`
+    : button.dataset.wmsSearchCode;
+  closeWmsSearchSuggestions();
+  renderWms();
+}
+
+function getSelectedWmsPartCode(area, value) {
+  const selectedCode = normalizeCode(wmsEditCode?.dataset.code);
+  if (selectedCode) return selectedCode;
+  const exact = getExactCompletePart(value);
+  if (exact) {
+    applyWmsPartSelection(exact);
+    return normalizeCode(exact.code);
+  }
+  return normalizeCode(value);
+}
+
+function createWmsLocationFromForm(data, area, selectedCode = "") {
+  const typedLocation = String(data.get("location") || "").trim();
+  const locationParts = typedLocation.split(".").map((part) => part.trim()).filter(Boolean);
+  const [street = "", building = "", floor = "", slot = ""] = locationParts;
+  const location = typedLocation;
+  const code = selectedCode || normalizeCode(data.get("code"));
+  const balance = String(data.get("balance") || "").trim();
+  const now = new Date().toISOString();
+  const existingLocations = getEffectiveWmsLocations(area, code);
+  return normalizeWmsLocation({
+    location,
+    street,
+    building,
+    floor,
+    slot,
+    stockType: area === "cd" ? data.get("stockType") : "",
+    description: wmsEditCode?.dataset.description || getWmsDescription(area, code, existingLocations),
+    balance,
+    countedAt: balance ? now : "",
+    countedBy: balance ? currentUser?.name || currentUser?.email || "" : "",
+    updatedAt: now,
+    updatedBy: currentUser?.name || currentUser?.email || "",
+  });
+}
+
+function getWmsRows(area) {
+  const codes = new Set([
+    ...Object.keys(getBaseWmsData(area) || {}),
+    ...Object.keys(wmsOverrides?.[area] || {}).filter((code) => !code.startsWith("_")),
+  ]);
+  return [...codes].map((code) => {
+    const locations = getEffectiveWmsLocations(area, code);
+    return {
+      code,
+      description: getWmsDescription(area, code, locations),
+      locations,
+    };
+  });
+}
+
+function getWmsLocationGroups(area) {
+  const groups = new Map();
+  getWmsRows(area).forEach((row) => {
+    row.locations.forEach((location, index) => {
+      const locationText = location.location || "Sem localização";
+      const key = getWmsLocationGroupKey(locationText, location.stockType || "");
+      if (!groups.has(key)) {
+        groups.set(key, {
+          location: locationText,
+          street: location.street || locationText.split(".")[0] || "",
+          building: location.building || locationText.split(".")[1] || "",
+          floor: location.floor || locationText.split(".")[2] || "",
+          slot: location.slot || locationText.split(".")[3] || "",
+          stockType: location.stockType || "",
+          items: [],
+        });
+      }
+      groups.get(key).items.push({
+        code: row.code,
+        description: row.description || location.description || "",
+        balance: location.balance || "",
+        countedAt: location.countedAt || "",
+        countedBy: location.countedBy || "",
+        originalIndex: index,
+      });
+    });
+  });
+  addEmptyWmsLocationGroups(groups);
+  return [...groups.values()].map((group) => ({
+    ...group,
+    items: group.items.sort((a, b) => String(a.code).localeCompare(String(b.code), "pt-BR", { numeric: true })),
+  }));
+}
+
+function getWmsLocationGroupKey(location, stockType = "") {
+  return [
+    normalizeSearchCompact(location),
+    normalizeSearchCompact(stockType),
+  ].join("|");
+}
+
+function addEmptyWmsLocationGroups(groups) {
+  const shelves = new Map();
+  [...groups.values()].forEach((group) => {
+    const parts = String(group.location || "").split(".");
+    if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) return;
+    const shelfKey = [
+      normalizeSearchCompact(parts.slice(0, 3).join(".")),
+      normalizeSearchCompact(group.stockType || ""),
+    ].join("|");
+    const current = shelves.get(shelfKey) || {
+      street: parts[0],
+      building: parts[1],
+      floor: parts[2],
+      stockType: group.stockType || "",
+      maxSlot: 0,
+      widths: parts.map((part) => part.length),
+    };
+    current.maxSlot = Math.max(current.maxSlot, Number(parts[3]) || 0);
+    current.widths = current.widths.map((width, index) => Math.max(width, parts[index]?.length || 0));
+    shelves.set(shelfKey, current);
+  });
+
+  shelves.forEach((shelf) => {
+    for (let slot = 1; slot <= shelf.maxSlot; slot += 1) {
+      const location = [
+        shelf.street.padStart(shelf.widths[0], "0"),
+        shelf.building.padStart(shelf.widths[1], "0"),
+        shelf.floor.padStart(shelf.widths[2], "0"),
+        String(slot).padStart(shelf.widths[3], "0"),
+      ].join(".");
+      const key = getWmsLocationGroupKey(location, shelf.stockType);
+      if (groups.has(key)) continue;
+      groups.set(key, {
+        location,
+        street: shelf.street,
+        building: shelf.building,
+        floor: shelf.floor,
+        slot: String(slot),
+        stockType: shelf.stockType,
+        items: [],
+        isEmpty: true,
+      });
+    }
+  });
+}
+
+function isWmsPieceSearchMatch(group, rawSearch) {
+  const search = String(rawSearch || "").trim();
+  if (!search) return true;
+  const exact = wmsActivePieceSearch?.raw === search ? wmsActivePieceSearch.exact : getExactWmsPart(getWmsCurrentArea(), search);
+  if (exact) {
+    const code = normalizeCode(exact.code);
+    return group.items.some((item) => normalizeCode(item.code) === code);
+  }
+  const normalized = wmsActivePieceSearch?.raw === search ? wmsActivePieceSearch.normalized : normalizeSearchText(search);
+  const compact = wmsActivePieceSearch?.raw === search ? wmsActivePieceSearch.compact : normalizeSearchCompact(search);
+  const tokens = wmsActivePieceSearch?.raw === search ? wmsActivePieceSearch.tokens : normalized.split(/[^a-z0-9]+/).filter((token) => token.length > 1);
+  return group.items.some((item) => {
+    const itemText = normalizeSearchText(`${item.code} ${item.description || ""}`);
+    const itemCompact = normalizeSearchCompact(`${item.code}${item.description || ""}`);
+    return itemText.includes(normalized)
+      || itemCompact.includes(compact)
+      || tokens.every((token) => itemText.includes(token));
+  });
+}
+
+function isWmsLocationGroupMatch(group) {
+  const street = normalizeSearchText(wmsStreetFilter?.value || "");
+  const shelf = normalizeSearchText(wmsShelfFilter?.value || "");
+  const haystack = normalizeSearchText([
+    group.location,
+    group.stockType,
+    group.street,
+    group.building,
+    group.floor,
+    group.slot,
+    ...group.items.flatMap((item) => [item.code, item.description]),
+  ].join(" "));
+  if (!isWmsPieceSearchMatch(group, wmsSearchFilter?.value || "")) return false;
+  if (street && !normalizeSearchText(group.street).includes(street)) return false;
+  if (shelf && !normalizeSearchText([group.location, group.building, group.floor, group.slot].join(" ")).includes(shelf)) return false;
+  return true;
+}
+
+function countDuplicateWmsItems(groups) {
+  const countByCode = groups.reduce((acc, group) => {
+    group.items.forEach((item) => {
+      const code = normalizeCode(item.code);
+      if (!code) return;
+      acc.set(code, (acc.get(code) || 0) + 1);
+    });
+    return acc;
+  }, new Map());
+  return [...countByCode.values()].filter((count) => count > 1).length;
+}
+
+function getFilteredWmsGroups(area = getWmsCurrentArea()) {
+  const raw = String(wmsSearchFilter?.value || "").trim();
+  wmsActivePieceSearch = {
+    raw,
+    exact: raw ? getExactWmsPart(area, raw) : null,
+    normalized: normalizeSearchText(raw),
+    compact: normalizeSearchCompact(raw),
+    tokens: normalizeSearchText(raw).split(/[^a-z0-9]+/).filter((token) => token.length > 1),
+  };
+  const groups = getWmsLocationGroups(area)
+    .filter(isWmsLocationGroupMatch)
+    .sort((a, b) => String(a.location).localeCompare(String(b.location), "pt-BR", { numeric: true }));
+  wmsActivePieceSearch = null;
+  return groups;
+}
+
+function makeWmsExportRows(area, groups) {
+  return groups.flatMap((group) => {
+    const baseRow = {
+      base: getWmsAreaLabel(area),
+      codigo: "",
+      descricao: "",
+      localizacao: group.location,
+      rua: group.street || "",
+      predio: group.building || "",
+      andar: group.floor || "",
+      apto: group.slot || "",
+      estoque: area === "cd" ? group.stockType || "" : "",
+      saldo: "",
+      ultimaContagem: "",
+      contadoPor: "",
+      status: group.items.length ? "Alocado" : "Vazio",
+    };
+    if (!group.items.length) return [baseRow];
+    return group.items.map((item) => ({
+      ...baseRow,
+      codigo: item.code,
+      descricao: item.description || "",
+      saldo: item.balance || "",
+      ultimaContagem: item.countedAt ? formatDate(item.countedAt) : "",
+      contadoPor: item.countedBy || "",
+      status: "Alocado",
+    }));
+  });
+}
+
+function downloadHtmlExcel(filename, headers, rows) {
+  const tableRows = [
+    `<tr>${headers.map((header) => `<th>${escapeHtml(header.label)}</th>`).join("")}</tr>`,
+    ...rows.map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header.key] ?? "")}</td>`).join("")}</tr>`),
+  ].join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"></head><body><table>${tableRows}</table></body></html>`;
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  URL.revokeObjectURL(link.href);
+  link.remove();
+}
+
+function exportWmsToExcel() {
+  const area = getWmsCurrentArea();
+  const rows = makeWmsExportRows(area, getFilteredWmsGroups(area));
+  if (!rows.length) {
+    window.alert("Nenhum item encontrado para exportar com o filtro atual.");
+    return;
+  }
+  const headers = [
+    { key: "base", label: "Base" },
+    { key: "codigo", label: "Código SAP" },
+    { key: "descricao", label: "Descrição" },
+    { key: "localizacao", label: "Localização" },
+    { key: "rua", label: "Rua" },
+    { key: "predio", label: "Prédio" },
+    { key: "andar", label: "Andar" },
+    { key: "apto", label: "Apto" },
+    { key: "estoque", label: "Estoque" },
+    { key: "saldo", label: "Saldo" },
+    { key: "ultimaContagem", label: "Última contagem" },
+    { key: "contadoPor", label: "Contado por" },
+    { key: "status", label: "Status" },
+  ];
+  const date = new Date().toISOString().slice(0, 10);
+  downloadHtmlExcel(`wms-${area}-${date}.xls`, headers, rows);
+}
+
+function getWmsEmptyMessage(area) {
+  const search = String(wmsSearchFilter?.value || "").trim();
+  const exact = search ? getExactWmsPart(area, search) : null;
+  if (exact && getEffectiveWmsLocations(area, exact.code).length === 0) {
+    return "Esse item existe na base, mas ainda não tem alocação no WMS.";
+  }
+  return "Nenhum item encontrado no WMS para este filtro.";
+}
+
+function renderWms() {
+  if (!wmsAreaFilter || !wmsList) return;
+  if (currentUser?.role === "cd" && !wmsAreaFilter.value) wmsAreaFilter.value = "cd";
+  if (currentUser?.role === "almox" && !wmsAreaFilter.value) wmsAreaFilter.value = "bp";
+  const area = wmsAreaFilter.value === "cd" ? "cd" : "bp";
+  const canEdit = canEditWmsArea(area);
+  const groups = getFilteredWmsGroups(area);
+  const visibleGroups = groups.slice(0, 250);
+  const itemCount = groups.reduce((total, group) => total + group.items.length, 0);
+  const emptyLocationCount = groups.filter((group) => group.items.length === 0).length;
+  const duplicateItemCount = countDuplicateWmsItems(groups);
+
+  if (wmsEditorForm) {
+    wmsEditorForm.hidden = !canEdit;
+    wmsEditorForm.querySelectorAll("input, button").forEach((field) => {
+      field.disabled = !canEdit;
+    });
+    wmsEditorForm.querySelector(".wms-stock-field")?.toggleAttribute("hidden", area !== "cd");
+  }
+  if (wmsPermissionMessage) {
+    wmsPermissionMessage.textContent = canEdit
+      ? `Você pode editar o WMS ${getWmsAreaLabel(area)}.`
+      : `Consulta liberada. Seu perfil não edita o WMS ${getWmsAreaLabel(area)}.`;
+  }
+  if (wmsSummary) {
+    const limitedText = groups.length > visibleGroups.length ? ` Mostrando as primeiras ${visibleGroups.length}.` : "";
+    wmsSummary.innerHTML = `
+      <span><strong>${groups.length}</strong> localizações encontradas</span>
+      <span><strong>${itemCount}</strong> itens alocados</span>
+      <span><strong>${emptyLocationCount}</strong> localizações vazias</span>
+      <span><strong>${duplicateItemCount}</strong> itens duplicados</span>
+      <span>${escapeHtml(getWmsAreaLabel(area))}.${limitedText}</span>
+    `;
+  }
+
+  wmsList.innerHTML = visibleGroups.length
+    ? visibleGroups.map((group) => renderWmsLocationGroup(area, group, canEdit)).join("")
+    : `<div class="empty-state compact">${escapeHtml(getWmsEmptyMessage(area))}</div>`;
+}
+
+function renderWmsLocationGroup(area, group, canEdit) {
+  const shelf = [group.street, group.building, group.floor, group.slot].filter(Boolean).join(".");
+  const details = area === "cd"
+    ? [group.stockType, shelf ? `Prat. ${shelf}` : ""]
+    : [shelf ? `Prat. ${shelf}` : ""];
+  return `
+    <article class="wms-row">
+      <div class="wms-row-main">
+        <strong>${escapeHtml(group.location)}</strong>
+        <span>${escapeHtml(details.filter(Boolean).join(" | ") || "Sem detalhe")}</span>
+      </div>
+      <div class="wms-location-list">
+        ${group.items.length ? group.items.map((item) => renderWmsLocationItem(area, group.location, item, canEdit)).join("") : `<span class="wms-empty-location">Sem item alocado</span>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderWmsLocationItem(area, location, item, canEdit) {
+  const balanceText = item.balance ? item.balance : "-";
+  const countedText = item.countedAt ? formatDate(item.countedAt) : "-";
+  const countedBy = item.countedBy ? ` por ${item.countedBy}` : "";
+  return `
+    <div class="wms-location">
+      <div>
+        <strong>${escapeHtml(item.code)}</strong>
+        <span>${escapeHtml(item.description || "Sem descrição cadastrada")}</span>
+        <span class="wms-balance-meta">Saldo: ${escapeHtml(balanceText)} | Última contagem: ${escapeHtml(countedText)}${escapeHtml(countedBy)}</span>
+      </div>
+      ${canEdit ? `
+        <div class="wms-location-actions">
+          <input class="wms-balance-input" type="number" min="0" step="1" value="${escapeAttr(item.balance || "")}" aria-label="Saldo do item ${escapeAttr(item.code)}" />
+          <button class="secondary-action compact" type="button" data-wms-action="save-balance" data-area="${escapeAttr(area)}" data-code="${escapeAttr(item.code)}" data-index="${item.originalIndex}" data-location="${escapeAttr(location)}">Gravar saldo</button>
+          <button class="danger-action compact" type="button" data-wms-action="remove" data-area="${escapeAttr(area)}" data-code="${escapeAttr(item.code)}" data-index="${item.originalIndex}" data-location="${escapeAttr(location)}">Desalocar</button>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function applyWmsBalanceToLocation(area, code, index, balance) {
+  const locations = getEffectiveWmsLocations(area, code);
+  if (!Number.isInteger(index) || index < 0 || index >= locations.length) return false;
+  const now = new Date().toISOString();
+  locations[index] = normalizeWmsLocation({
+    ...locations[index],
+    balance,
+    countedAt: now,
+    countedBy: currentUser?.name || currentUser?.email || "",
+    updatedAt: now,
+    updatedBy: currentUser?.name || currentUser?.email || "",
+  });
+  setEffectiveWmsLocations(area, code, locations);
+  return true;
+}
+
+function handleWmsAllocationSubmit(event) {
+  event.preventDefault();
+  if (!wmsAreaFilter || !wmsEditorForm) return;
+  const area = wmsAreaFilter.value === "cd" ? "cd" : "bp";
+  if (!canEditWmsArea(area)) {
+    window.alert("Seu perfil não tem permissão para editar este WMS.");
+    return;
+  }
+  const data = new FormData(wmsEditorForm);
+  const code = getSelectedWmsPartCode(area, data.get("code"));
+  const location = createWmsLocationFromForm(data, area, code);
+  if (!code || !location.location) {
+    window.alert("Informe a peça e a localização.");
+    return;
+  }
+  const currentLocations = getEffectiveWmsLocations(area, code);
+  const exists = currentLocations.some((item) => normalizeSearchCompact(item.location) === normalizeSearchCompact(location.location));
+  if (exists) {
+    window.alert("Este item já está alocado nessa localização.");
+    return;
+  }
+  setEffectiveWmsLocations(area, code, [location, ...currentLocations]);
+  saveWmsOverrides();
+  wmsEditorForm.reset();
+  if (wmsSearchFilter) wmsSearchFilter.value = "";
+  if (wmsShelfFilter) wmsShelfFilter.value = location.location;
+  renderWms();
+}
+
+function handleWmsListClick(event) {
+  const button = event.target.closest("[data-wms-action]");
+  if (!button) return;
+  const area = button.dataset.area === "cd" ? "cd" : "bp";
+  if (!canEditWmsArea(area)) {
+    window.alert("Seu perfil não tem permissão para editar este WMS.");
+    return;
+  }
+  if (button.dataset.wmsAction === "save-balance") {
+    const row = button.closest(".wms-location");
+    const balance = String(row?.querySelector(".wms-balance-input")?.value ?? "").trim();
+    if (balance === "") {
+      window.alert("Informe o saldo contado.");
+      return;
+    }
+    const code = normalizeCode(button.dataset.code);
+    const index = Number(button.dataset.index);
+    if (!applyWmsBalanceToLocation(area, code, index, balance)) return;
+    saveWmsOverrides();
+    renderWms();
+    return;
+  }
+
+  if (button.dataset.wmsAction !== "remove") return;
+  const code = normalizeCode(button.dataset.code);
+  const index = Number(button.dataset.index);
+  const locations = getEffectiveWmsLocations(area, code);
+  if (!Number.isInteger(index) || index < 0 || index >= locations.length) return;
+  const location = locations[index]?.location || "";
+  if (!window.confirm(`Desalocar ${code} da localização ${location}?`)) return;
+  locations.splice(index, 1);
+  setEffectiveWmsLocations(area, code, locations);
+  saveWmsOverrides();
+  renderWms();
+}
+
 function getWmsSummary(code) {
-  const locations = wmsLocations[String(code)] || [];
+  const locations = getEffectiveWmsLocations("bp", code);
   if (locations.length === 0) {
     return { found: false, text: "WMS: sem localização cadastrada" };
   }
@@ -4132,7 +5003,7 @@ function getWmsSummary(code) {
 }
 
 function getCdWmsSummary(code) {
-  const locations = cdWmsLocations[String(code)] || [];
+  const locations = getEffectiveWmsLocations("cd", code);
   if (locations.length === 0) {
     return { found: false, text: "CD: sem localização cadastrada" };
   }
@@ -6198,6 +7069,14 @@ function applyTheme(theme) {
   if (themeToggle) {
     themeToggle.textContent = theme === "dark" ? "Tema claro" : "Tema escuro";
   }
+}
+
+function applySideNavState(collapsed) {
+  body.dataset.navCollapsed = collapsed ? "true" : "false";
+  if (!sideNavToggle) return;
+  sideNavToggle.textContent = collapsed ? "»" : "«";
+  sideNavToggle.setAttribute("aria-label", collapsed ? "Abrir menu" : "Ocultar menu");
+  sideNavToggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
 function formatDate(value) {
