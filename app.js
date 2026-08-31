@@ -8,6 +8,8 @@ const CUSTOM_PARTS_KEY = "pecas-transporte-pecas-cadastradas";
 const PART_REGISTRATIONS_KEY = "pecas-transporte-cadastros-pecas";
 const EMAIL_SETTINGS_KEY = "pecas-transporte-email-config";
 const REQUEST_SUBMIT_LOCK_KEY = "pecas-transporte-envio-solicitacao-lock";
+const REQUEST_CACHE_FALLBACK_LIMITS = [120, 60, 25];
+const PART_REGISTRATION_CACHE_FALLBACK_LIMITS = [120, 60, 25];
 const supabaseClient = window.manuPecasSupabase || null;
 
 const partsCatalog = Array.isArray(globalThis.PARTS_CATALOG) ? globalThis.PARTS_CATALOG : [];
@@ -208,9 +210,9 @@ loginForm.addEventListener("submit", async (event) => {
 
   currentUser = { email, role: account.role, label: roleLabel(account.role), name: account.name, corporateEmail: account.corporateEmail };
   if (loginForm.elements.remember.checked) {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
+    safeSetStorageItem(SESSION_KEY, JSON.stringify(currentUser), "sessão local");
   } else {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
+    safeSetSessionStorageItem(SESSION_KEY, JSON.stringify(currentUser), "sessão temporária");
   }
 
   loginForm.reset();
@@ -328,7 +330,7 @@ form.addEventListener("submit", async (event) => {
     if (!recentDuplicate) {
       requests = [request, ...requests];
       linkPartRegistrationsToRequest(request);
-      localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+      persistRequestsLocally();
     }
 
     const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
@@ -641,7 +643,7 @@ function renderAppSafely() {
     console.error("Erro ao carregar a tela principal. Tentando normalizar dados.", error);
     setSupabaseStatus("error", "Erro ao carregar tela");
     requests = (Array.isArray(requests) ? requests : []).map((request) => normalizeRequest(request)).filter(Boolean);
-    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+    persistRequestsLocally();
 
     try {
       setPage(currentPage);
@@ -722,7 +724,7 @@ function getReadNotifications() {
 function saveReadNotifications(readSet) {
   const all = JSON.parse(localStorage.getItem(NOTIFICATION_READ_KEY) || "{}");
   all[currentUser.email] = [...readSet];
-  localStorage.setItem(NOTIFICATION_READ_KEY, JSON.stringify(all));
+  safeSetStorageItem(NOTIFICATION_READ_KEY, JSON.stringify(all), "notificações lidas");
 }
 
 function getUserNotifications() {
@@ -868,6 +870,98 @@ function loadRequests() {
   } catch {
     return seedRequests;
   }
+}
+
+function isStorageQuotaError(error) {
+  return error?.name === "QuotaExceededError"
+    || error?.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || /quota|exceeded/i.test(String(error?.message || ""));
+}
+
+function safeSetStorageItem(key, value, context = "cache local") {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    const reason = isStorageQuotaError(error) ? "limite de espaço do navegador" : "falha no armazenamento local";
+    console.warn(`Não foi possível salvar ${context} (${reason}).`, error);
+    return false;
+  }
+}
+
+function safeSetSessionStorageItem(key, value, context = "sessão") {
+  try {
+    sessionStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn(`Não foi possível salvar ${context}.`, error);
+    return false;
+  }
+}
+
+function compactPhotoForLocalCache(photo) {
+  if (!photo || typeof photo !== "object") return photo;
+  return {
+    ...photo,
+    dataUrl: "",
+  };
+}
+
+function compactRequestItemForLocalCache(item) {
+  if (!item || typeof item !== "object") return item;
+  const pendingPhotos = normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl)
+    .map(compactPhotoForLocalCache);
+  return {
+    ...item,
+    pendingPhotoDataUrl: "",
+    pendingPhotos,
+    receiptInvoiceDataUrl: "",
+  };
+}
+
+function compactRequestForLocalCache(request) {
+  if (!request || typeof request !== "object") return request;
+  return {
+    ...request,
+    transferInvoiceDataUrl: "",
+    receiptInvoiceDataUrl: "",
+    items: Array.isArray(request.items) ? request.items.map(compactRequestItemForLocalCache) : [],
+  };
+}
+
+function compactPartRegistrationForLocalCache(registration) {
+  if (!registration || typeof registration !== "object") return registration;
+  return {
+    ...registration,
+    photoDataUrl: "",
+    photos: Array.isArray(registration.photos) ? registration.photos.map(compactPhotoForLocalCache) : [],
+  };
+}
+
+function saveLocalCacheWithFallback(key, rows, compactRow, limits, context) {
+  const list = Array.isArray(rows) ? rows : [];
+  const compactRows = list.map(compactRow);
+  if (safeSetStorageItem(key, JSON.stringify(compactRows), context)) return true;
+
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`Não foi possível limpar ${context} antigo.`, error);
+  }
+
+  for (const limit of limits) {
+    const reducedRows = compactRows.slice(0, limit);
+    if (safeSetStorageItem(key, JSON.stringify(reducedRows), `${context} reduzido`)) return true;
+  }
+  return false;
+}
+
+function saveRequestsLocalCache() {
+  return saveLocalCacheWithFallback(REQUESTS_KEY, requests, compactRequestForLocalCache, REQUEST_CACHE_FALLBACK_LIMITS, "cache local de solicitações");
+}
+
+function savePartRegistrationsLocalCache() {
+  return saveLocalCacheWithFallback(PART_REGISTRATIONS_KEY, partRegistrations, compactPartRegistrationForLocalCache, PART_REGISTRATION_CACHE_FALLBACK_LIMITS, "cache local de cadastros de peças");
 }
 
 function normalizeRequest(request) {
@@ -1310,36 +1404,36 @@ async function syncFromSupabase() {
     if (syncedRequests) {
       requests = mergeRequestCollections(requests, syncedRequests.map(normalizeRequest))
         .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-      localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+      persistRequestsLocally();
     }
     if (remoteUsers) {
       managedUsers = dedupeUsers(remoteUsers.map((user) => normalizeAccount(user, user.email)));
-      localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+      safeSetStorageItem(USERS_KEY, JSON.stringify(managedUsers), "usuários");
       saveManagedUsers();
       deleteSupabaseRow("manupecas_users", "email", "rodrigo.silva");
     }
     if (remoteDeletedUsers) {
       deletedUsers = remoteDeletedUsers;
-      localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers));
+      safeSetStorageItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers), "usuários excluídos");
     }
     if (remoteCustomParts) {
       customParts = remoteCustomParts;
-      localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+      safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
     }
     if (remoteStructuredParts) {
       customParts = mergeCustomParts(customParts, remoteStructuredParts);
-      localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+      safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
     }
     if (remotePartRegistrations) {
       partRegistrations = remotePartRegistrations;
-      localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+      savePartRegistrationsLocalCache();
     }
     if (applyCompletedPartRegistrationsToRequests()) {
       await saveRequestsSafely("cadastros SAP concluídos");
     }
     if (remoteEmailSettings) {
       emailSettings = normalizeEmailSettings(remoteEmailSettings);
-      localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
+      safeSetStorageItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings), "configurações de e-mail");
     }
     setSupabaseStatus("ok", "Supabase: conectado");
   } catch (error) {
@@ -1415,7 +1509,7 @@ async function loadAccountForLogin(login) {
   if (!data?.data) return null;
   const remoteUser = normalizeAccount(data.data, data.email);
   managedUsers = dedupeUsers([...managedUsers.filter((user) => normalizeLogin(user.email) !== normalizedLogin), remoteUser]);
-  localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+  safeSetStorageItem(USERS_KEY, JSON.stringify(managedUsers), "usuários");
   return remoteUser;
 }
 
@@ -1560,7 +1654,7 @@ async function upsertMergedRequestRows(rows) {
   const mergedRows = rowsWithoutCollision.map((row) => mergeRequestByProgress(row, remoteById.get(row.id)));
   const mergedById = new Map(mergedRows.map((row) => [row.id, row]));
   requests = requests.map((request) => mergedById.get(request.id) || request);
-  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  persistRequestsLocally();
 
   return upsertSupabaseRows("manupecas_requests", "id", mergedRows);
 }
@@ -1653,11 +1747,11 @@ function getRecentRequestSubmitLock(signature) {
 
 function lockRequestSubmit(signature, requestId = "registrando") {
   if (!signature) return;
-  localStorage.setItem(REQUEST_SUBMIT_LOCK_KEY, JSON.stringify({
+  safeSetStorageItem(REQUEST_SUBMIT_LOCK_KEY, JSON.stringify({
     signature,
     requestId,
     createdAt: Date.now(),
-  }));
+  }), "bloqueio contra solicitação duplicada");
 }
 
 function clearRequestSubmitLock() {
@@ -2037,14 +2131,14 @@ function saveRequests() {
     const changed = !previous || getComparableRequestPayload(previous) !== getComparableRequestPayload(request);
     return { ...request, updatedAt: changed ? now : request.updatedAt || previous?.updatedAt || now };
   });
-  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  persistRequestsLocally();
   return upsertMergedRequestRows(requests).then(() => {
     syncStructuredTablesSafely("salvamento de solicitações");
   });
 }
 
 function persistRequestsLocally() {
-  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  saveRequestsLocalCache();
 }
 
 async function saveRequestsSafely(context = "solicitações") {
@@ -2052,7 +2146,7 @@ async function saveRequestsSafely(context = "solicitações") {
     await saveRequests();
     return true;
   } catch (error) {
-    localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+    persistRequestsLocally();
     setSupabaseStatus("error", "Supabase: erro ao salvar");
     console.warn(`Falha ao salvar ${context}. O app continuará com os dados locais.`, error);
     return false;
@@ -2088,7 +2182,7 @@ function loadManagedUsers() {
 
 function saveManagedUsers() {
   managedUsers = dedupeUsers(managedUsers.map((user) => normalizeAccount(user, user.email)));
-  localStorage.setItem(USERS_KEY, JSON.stringify(managedUsers));
+  safeSetStorageItem(USERS_KEY, JSON.stringify(managedUsers), "usuários");
   upsertSupabaseRows("manupecas_users", "email", managedUsers);
 }
 
@@ -2110,7 +2204,7 @@ function loadDeletedUsers() {
 }
 
 function saveDeletedUsers() {
-  localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers));
+  safeSetStorageItem(DELETED_USERS_KEY, JSON.stringify(deletedUsers), "usuários excluídos");
   replaceSupabaseDeletedUsers();
 }
 
@@ -2191,7 +2285,7 @@ function normalizeEmailList(value) {
 
 async function saveEmailSettings() {
   emailSettings = normalizeEmailSettings(emailSettings);
-  localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
+  safeSetStorageItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings), "configurações de e-mail");
   if (!supabaseClient) return { ok: true, remote: false, error: "" };
   const { error } = await supabaseClient
     .from("manupecas_email_settings")
@@ -2247,7 +2341,7 @@ function loadCustomParts() {
 }
 
 function saveCustomParts() {
-  localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
+  safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
   upsertSupabaseRows("manupecas_custom_parts", "code", customParts);
   mirrorCustomPartsToStructuredTable(customParts);
 }
@@ -2261,7 +2355,7 @@ function loadPartRegistrations() {
 }
 
 function savePartRegistrations() {
-  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+  savePartRegistrationsLocalCache();
   upsertSupabaseRows("manupecas_part_registrations", "id", partRegistrations);
 }
 
@@ -4679,7 +4773,7 @@ function applyCompletedPartRegistrationsToRequests() {
     };
   });
 
-  if (changed) localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
+  if (changed) persistRequestsLocally();
   return changed;
 }
 
@@ -4744,9 +4838,9 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
         }
       : item
   );
-  localStorage.setItem(REQUESTS_KEY, JSON.stringify(requests));
-  localStorage.setItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts));
-  localStorage.setItem(PART_REGISTRATIONS_KEY, JSON.stringify(partRegistrations));
+  persistRequestsLocally();
+  safeSetStorageItem(CUSTOM_PARTS_KEY, JSON.stringify(customParts), "base local de peças");
+  savePartRegistrationsLocalCache();
   if (updatedRequests.length > 0) {
     openPartRegistrationCompletedEmailDraft(updatedRequests[0], part, useExisting);
   } else {
@@ -5800,7 +5894,7 @@ async function refreshEmailSettingsCache() {
       const remoteEmailSettings = await loadEmailSettingsFromSupabase();
       if (remoteEmailSettings) {
         emailSettings = normalizeEmailSettings(remoteEmailSettings);
-        localStorage.setItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings));
+        safeSetStorageItem(EMAIL_SETTINGS_KEY, JSON.stringify(emailSettings), "configurações de e-mail");
         return emailSettings;
       }
     } catch (error) {
@@ -6100,7 +6194,7 @@ function formatDateOnly(value) {
 
 function applyTheme(theme) {
   body.dataset.theme = theme;
-  localStorage.setItem(THEME_KEY, theme);
+  safeSetStorageItem(THEME_KEY, theme, "tema");
   if (themeToggle) {
     themeToggle.textContent = theme === "dark" ? "Tema claro" : "Tema escuro";
   }
