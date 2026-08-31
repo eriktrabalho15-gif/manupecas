@@ -6712,7 +6712,7 @@ function getEmailRecipients(step, fallback = "") {
   return {
     step,
     fallback,
-    to: uniqueTo.join(";") || (!uniqueCc.length ? fallbackTo : ""),
+    to: uniqueTo.join(";") || fallbackTo,
     cc: uniqueCc.join(";"),
   };
 }
@@ -6798,16 +6798,69 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   params.push(`subject=${encodeMailParam(subject || "")}`);
   params.push(`body=${encodeMailParam(bodyText || "")}`);
   const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
+  const mailtoUrl = buildMailtoUrl(recipient, cc, subject, bodyText);
   if (isPopupUsable(popup)) {
-    try {
-      popup.location.assign(outlookUrl);
-    } catch {
-      popup.location.href = outlookUrl;
-    }
+    renderMailFallbackPage(popup, outlookUrl, mailtoUrl);
     return;
   }
   const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
-  if (!opened) window.alert("O navegador bloqueou a abertura do Outlook Web. Libere pop-ups para o ManuPeças e tente novamente.");
+  if (!opened) window.location.href = mailtoUrl;
+}
+
+function buildMailtoUrl(to, cc, subject, bodyText) {
+  const params = [];
+  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
+  params.push(`subject=${encodeMailParam(subject || "")}`);
+  params.push(`body=${encodeMailParam(bodyText || "")}`);
+  return `mailto:${encodeMailParam(to || "")}?${params.join("&")}`;
+}
+
+function renderMailFallbackPage(popup, outlookUrl, mailtoUrl) {
+  const outlookAttr = escapeAttr(outlookUrl);
+  const mailtoAttr = escapeAttr(mailtoUrl);
+  try {
+    popup.document.open();
+    popup.document.write(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ManuPeças - E-mail</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:0;padding:32px;color:#10201a;background:#f4f8f6}
+    main{max-width:620px;margin:0 auto;background:#fff;border:1px solid #d7e1dc;border-radius:10px;padding:24px;box-shadow:0 14px 30px rgba(16,32,26,.08)}
+    h1{margin:0 0 8px;font-size:24px}
+    p{margin:0 0 18px;color:#53645d;line-height:1.45}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    a{display:inline-flex;align-items:center;min-height:40px;border-radius:8px;padding:0 14px;font-weight:800;text-decoration:none}
+    .primary{background:#0f9468;color:white}
+    .secondary{border:1px solid #d7e1dc;color:#10201a;background:#fff}
+    small{display:block;margin-top:16px;color:#53645d}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Abrindo e-mail...</h1>
+    <p>Se o Outlook Web não abrir sozinho, use uma das opções abaixo.</p>
+    <div class="actions">
+      <a class="primary" href="${outlookAttr}">Abrir no Outlook Web</a>
+      <a class="secondary" href="${mailtoAttr}">Abrir no aplicativo de e-mail</a>
+    </div>
+    <small>O e-mail já foi preparado com destinatários, assunto e texto.</small>
+  </main>
+  <script>
+    setTimeout(function(){ window.location.href = ${JSON.stringify(outlookUrl)}; }, 250);
+  </script>
+</body>
+</html>`);
+    popup.document.close();
+  } catch {
+    try {
+      popup.location.href = outlookUrl;
+    } catch {
+      window.location.href = mailtoUrl;
+    }
+  }
 }
 
 function cleanEmailText(value) {
