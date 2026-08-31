@@ -6793,8 +6793,9 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
   console.info("ManuPeças e-mail", { etapa: finalRecipients.step || "manual", para: recipient, copia: cc });
   const params = [];
-  if (recipient) params.push(`to=${encodeMailParam(recipient)}`);
-  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
+  const outlookRecipient = recipient && cc ? `${recipient}?cc=${cc}` : recipient;
+  if (outlookRecipient) params.push(`to=${encodeMailParam(outlookRecipient)}`);
+  if (!recipient && cc) params.push(`cc=${encodeMailParam(cc)}`);
   params.push(`subject=${encodeMailParam(subject || "")}`);
   params.push(`body=${encodeMailParam(bodyText || "")}`);
   const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
