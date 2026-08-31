@@ -670,6 +670,10 @@ async function startApp() {
   if (applyCompletedPartRegistrationsToRequests()) {
     await saveRequestsSafely("cadastros SAP concluídos");
   }
+  if (repairMissingPartRegistrationBacklog()) {
+    await saveRequestsSafely("cadastros de item pendentes");
+    savePartRegistrations();
+  }
   if (repairRejectedCancellationsStuckInReview()) {
     await saveRequestsSafely("cancelamentos recusados");
   }
@@ -5512,10 +5516,7 @@ function parsePhotoDataset(value, fallbackName = "", fallbackDataUrl = "") {
 }
 
 function linkPartRegistrationsToRequest(request) {
-  const pendingIds = request.items
-    .filter(isPendingRegistrationItem)
-    .map((item) => item.pendingRegistrationId)
-    .filter(Boolean);
+  const pendingIds = ensurePendingRegistrationsForRequest(request);
   if (pendingIds.length === 0) return;
 
   partRegistrations = partRegistrations.map((registration) =>
@@ -5524,6 +5525,104 @@ function linkPartRegistrationsToRequest(request) {
       : registration
   );
   savePartRegistrations();
+}
+
+function ensurePendingRegistrationsForRequest(request) {
+  if (!request || !Array.isArray(request.items)) return [];
+  const pendingIds = [];
+  let requestChanged = false;
+
+  request.items = request.items.map((item, index) => {
+    if (!isPendingRegistrationItem(item)) return item;
+    const existing = findPartRegistrationForPendingItem(request, item);
+    const registration = existing || createPartRegistrationFromPendingItem(request, item, index);
+    if (!registration) return item;
+    pendingIds.push(registration.id);
+    if (existing) {
+      if (item.pendingRegistrationId !== existing.id) requestChanged = true;
+      return item.pendingRegistrationId === existing.id ? item : { ...item, pendingRegistrationId: existing.id, isPendingRegistration: true };
+    }
+    requestChanged = true;
+    return {
+      ...item,
+      isPendingRegistration: true,
+      pendingRegistrationId: registration.id,
+      pendingOriginalCode: item.pendingOriginalCode || "Sem código original",
+      pendingPhotoName: item.pendingPhotoName || "",
+      pendingPhotoDataUrl: item.pendingPhotoDataUrl || "",
+      pendingPhotos: normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl),
+    };
+  });
+
+  if (requestChanged && request.status !== "cadastro") {
+    request.status = "cadastro";
+    request.response = request.response || "Solicitação aguardando cadastro de item.";
+  }
+
+  return pendingIds.filter(Boolean);
+}
+
+function findPartRegistrationForPendingItem(request, item) {
+  if (item.pendingRegistrationId) {
+    const byId = partRegistrations.find((registration) => registration.id === item.pendingRegistrationId);
+    if (byId) return byId;
+  }
+
+  const itemDescription = normalizeSearchText(item.description || "");
+  const itemOriginalCode = normalizeSearchText(item.pendingOriginalCode || "");
+  return partRegistrations.find((registration) => {
+    if (registration.status === "done") return false;
+    if (registration.linkedRequestId && registration.linkedRequestId === request.id && getRegistrationDescription(registration) === itemDescription) return true;
+    if (getRegistrationDescription(registration) !== itemDescription) return false;
+    const registrationOriginalCode = getRegistrationOriginalCode(registration);
+    return !registrationOriginalCode || !itemOriginalCode || registrationOriginalCode === itemOriginalCode;
+  }) || null;
+}
+
+function createPartRegistrationFromPendingItem(request, item, index = 0) {
+  const description = String(item.description || "").trim();
+  if (!description) return null;
+  const photos = normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl);
+  const registration = {
+    id: item.pendingRegistrationId || `CAD-${String(request.id || Date.now()).replace(/[^A-Z0-9]/gi, "")}-${String(index + 1).padStart(2, "0")}`,
+    description,
+    originalCode: String(item.pendingOriginalCode || "").trim() || "Sem código original",
+    photoName: photos[0]?.name || "",
+    photoDataUrl: photos[0]?.dataUrl || "",
+    photos,
+    requestedBy: request.requestedBy || "",
+    requestedByEmail: request.requestedByEmail || "",
+    createdAt: request.createdAt || new Date().toISOString(),
+    status: "pending",
+    createdCode: "",
+    completedAt: "",
+    completedBy: "",
+    linkedRequestId: request.id || "",
+    linkedRequestBus: request.bus || "",
+  };
+  partRegistrations = [registration, ...partRegistrations];
+  return registration;
+}
+
+function repairMissingPartRegistrationBacklog() {
+  let changed = false;
+  requests.forEach((request) => {
+    const beforeIds = new Set(partRegistrations.map((registration) => registration.id));
+    const pendingIds = ensurePendingRegistrationsForRequest(request);
+    if (pendingIds.length) {
+      partRegistrations = partRegistrations.map((registration) =>
+        pendingIds.includes(registration.id)
+          ? { ...registration, linkedRequestId: registration.linkedRequestId || request.id, linkedRequestBus: registration.linkedRequestBus || request.bus }
+          : registration
+      );
+    }
+    if (partRegistrations.some((registration) => !beforeIds.has(registration.id))) changed = true;
+  });
+  if (changed) {
+    persistRequestsLocally();
+    savePartRegistrationsLocalCache();
+  }
+  return changed;
 }
 
 function renderPartRegistrations() {
