@@ -353,6 +353,9 @@ form.addEventListener("submit", async (event) => {
 
     const recentDuplicate = findRecentDuplicateRequest(draftRequest);
     if (!recentDuplicate) lockRequestSubmit(submitSignature, "registrando");
+    if (!recentDuplicate) {
+      prepareMailPopup();
+    }
     const request = recentDuplicate || { ...draftRequest, id: await makeCode(), duplicateSignature: submitSignature };
     if (!recentDuplicate) lockRequestSubmit(submitSignature, request.id);
 
@@ -363,9 +366,6 @@ form.addEventListener("submit", async (event) => {
     }
 
     const savedRequest = requests.find((item) => item.id === request.id) || requests.find((item) => isSameLogicalRequest(item, request)) || request;
-    if (!recentDuplicate) {
-      prepareMailPopup();
-    }
     if (savedRequest.id !== request.id) {
       linkPartRegistrationsToRequest(savedRequest);
       await savePartRegistrations();
@@ -5403,6 +5403,8 @@ async function createPartRegistration(data) {
     return;
   }
 
+  prepareMailPopup();
+
   const photos = await Promise.all(photoFiles.map(async (file) => ({
     name: file.name,
     dataUrl: await readFileAsDataUrl(file),
@@ -5415,6 +5417,7 @@ async function createPartRegistration(data) {
   if (alreadyPending) {
     const pending = partRegistrations.find((item) => item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase());
     linkPendingRegistrationToInput(pending, getPartRegistrationTargetInput());
+    closePreparedMailPopup();
     partRegistrationMessage.textContent = "Este cadastro já está pendente para o admin e foi vinculado à solicitação.";
     partRegistrationMessage.className = "password-message success";
     setTimeout(() => partRegistrationDialog.close(), 450);
@@ -5444,6 +5447,7 @@ async function createPartRegistration(data) {
   savePartRegistrations();
   renderPartRegistrations();
   linkPendingRegistrationToInput(registration, getPartRegistrationTargetInput());
+  openStandalonePartRegistrationEmailDraft(registration);
   partRegistrationMessage.textContent = "Cadastro enviado para Erik e Bruno.";
   partRegistrationMessage.className = "password-message success";
   setTimeout(() => partRegistrationDialog.close(), 450);
@@ -6693,7 +6697,6 @@ function userLoginToEmail(login) {
 
 function getEmailRecipients(step, fallback = "") {
   const setting = normalizeEmailStepSetting(emailSettings?.[step], null);
-  const hasStepConfig = Boolean(emailSettings && Object.prototype.hasOwnProperty.call(emailSettings, step));
   const to = [
     ...(setting.toUsers || []).map(userLoginToEmail),
     ...splitEmailLikeList(setting.extraTo || "").map(userLoginToEmail),
@@ -6705,10 +6708,11 @@ function getEmailRecipients(step, fallback = "") {
   const uniqueTo = to.filter((email, index, list) => list.indexOf(email) === index);
   const toSet = new Set(uniqueTo.map((email) => email.toLowerCase()));
   const uniqueCc = cc.filter((email, index, list) => email && !toSet.has(email.toLowerCase()) && list.indexOf(email) === index);
+  const fallbackTo = normalizeEmailList(fallback);
   return {
     step,
     fallback,
-    to: uniqueTo.join(";") || (hasStepConfig ? "" : normalizeEmailList(fallback)),
+    to: uniqueTo.join(";") || (!uniqueCc.length ? fallbackTo : ""),
     cc: uniqueCc.join(";"),
   };
 }
@@ -6789,14 +6793,17 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
   console.info("ManuPeças e-mail", { etapa: finalRecipients.step || "manual", para: recipient, copia: cc });
   const params = [];
-  const toWithCc = recipient && cc ? `${recipient}?cc=${cc}` : recipient;
-  if (toWithCc) params.push(`to=${encodeMailParam(toWithCc)}`);
-  if (!recipient && cc) params.push(`cc=${encodeMailParam(cc)}`);
+  if (recipient) params.push(`to=${encodeMailParam(recipient)}`);
+  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
   params.push(`subject=${encodeMailParam(subject || "")}`);
   params.push(`body=${encodeMailParam(bodyText || "")}`);
   const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
   if (isPopupUsable(popup)) {
-    popup.location.href = outlookUrl;
+    try {
+      popup.location.assign(outlookUrl);
+    } catch {
+      popup.location.href = outlookUrl;
+    }
     return;
   }
   const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
@@ -6853,6 +6860,17 @@ function openPartRegistrationEmailDraft(request) {
       isPendingRegistrationItem(item) ? "OBS.: item aguardando código SAP" : "",
     ]) },
     { title: "Motivo", content: request.reason },
+  ]);
+
+  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
+}
+
+function openStandalonePartRegistrationEmailDraft(registration) {
+  const subject = `[ManuPeças ${registration.id}] Cadastro de item`;
+  const photos = getRegistrationPhotos(registration);
+  const bodyText = buildEmailBody("Solicitação de Cadastro de Item", "Um item sem cadastro SAP foi enviado pelo PCM. Cadastre no SAP e informe código e descrição final na aba Cadastro.", [
+    { title: "Item para Cadastro", content: `Descrição PCM: ${registration.description || "-"}\nCódigo/Fabricante: ${registration.originalCode || "-"}\nSolicitante: ${registration.requestedBy || "-"}\nData: ${formatDateOrDash(registration.createdAt)}\nFoto(s): ${photos.length ? `${photos.map((photo) => photo.name).join("; ")} - disponível no ManuPeças` : "Não anexada"}` },
+    { title: "Próxima etapa", content: "Após cadastrar ou localizar o item no SAP, preencher Código SAP e Descrição SAP no ManuPeças." },
   ]);
 
   openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
