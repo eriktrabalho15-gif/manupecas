@@ -748,6 +748,59 @@ body[data-view="app"] .login-screen {
     color: var(--ink);
   }
 
+  .nav-group {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 8px;
+  }
+
+  .nav-group summary {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: space-between;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 0 12px 0 14px;
+    color: var(--muted);
+    font-weight: 900;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .nav-group summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .nav-group summary:hover,
+  .nav-group:has(.tab-button.active) summary {
+    border-color: var(--line);
+    background: var(--panel-strong);
+    color: var(--ink);
+  }
+
+  .nav-group summary b {
+    transition: transform 0.16s ease;
+  }
+
+  .nav-group[open] summary b {
+    transform: rotate(180deg);
+  }
+
+  .nav-submenu {
+    display: grid;
+    gap: 4px;
+    padding-left: 10px;
+  }
+
+  .nav-submenu .tab-button {
+    min-height: 38px;
+    padding-left: 14px;
+    font-size: 0.9rem;
+  }
+
   .tab-button[data-page="wms"],
   .tab-button[data-page="part-admin"],
   .tab-button[data-page="history"] {
@@ -755,7 +808,6 @@ body[data-view="app"] .login-screen {
   }
 
   .tab-button[data-page="wms"]::before,
-  .tab-button[data-page="part-admin"]::before,
   .tab-button[data-page="history"]::before {
     content: "";
     position: absolute;
@@ -798,6 +850,28 @@ body[data-view="app"] .login-screen {
   }
 
   body[data-nav-collapsed="true"] .tab-button span {
+    display: none;
+  }
+
+  body[data-nav-collapsed="true"] .nav-group {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  body[data-nav-collapsed="true"] .nav-group summary {
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  body[data-nav-collapsed="true"] .nav-group summary::before {
+    content: "CTL";
+    font-size: 0.72rem;
+    font-weight: 900;
+  }
+
+  body[data-nav-collapsed="true"] .nav-group summary b,
+  body[data-nav-collapsed="true"] .nav-submenu {
     display: none;
   }
 
@@ -1783,10 +1857,52 @@ body[data-view="app"] .login-screen {
 .pickup-confirmation-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfc;
+}
+
+.pickup-confirmation-fields .pickup-pdf-button {
+  grid-column: 1 / -1;
+  min-height: 40px;
+  background: #ffffff;
+}
+
+.pickup-confirmation-fields .pickup-pending-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 190px);
   gap: 10px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #edd7aa;
+  border-radius: 8px;
+  background: #fff8e8;
+}
+
+.pickup-confirmation-fields .pickup-pending-panel[hidden] {
+  display: none;
+}
+
+.pickup-confirmation-fields .pickup-block-save {
+  min-height: 40px;
+  background: #ffffff;
+}
+
+.pickup-confirmation-fields .pickup-block-status {
+  grid-column: 1 / -1;
+  min-height: 18px;
+  color: #8a5b00;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.pickup-confirmation-fields select {
+  min-height: 38px;
+  padding: 9px 11px;
 }
 
 .pickup-confirmation-fields .pickup-message {
@@ -2104,15 +2220,14 @@ body[data-view="app"] .login-screen {
   font-size: 0.92rem;
 }
 
-.wms-toolbar,
-.wms-editor {
+.wms-toolbar {
   border-top: 1px solid var(--line);
   padding: 12px 16px;
 }
 
 .wms-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 0.65fr) minmax(320px, 1.45fr) minmax(220px, 0.85fr) auto;
+  grid-template-columns: minmax(180px, 0.62fr) minmax(320px, 1.42fr) minmax(220px, 0.82fr) auto;
   gap: 12px;
   align-items: end;
   background: color-mix(in srgb, var(--panel-strong) 55%, var(--panel));
@@ -2139,6 +2254,7 @@ body[data-view="app"] .login-screen {
   padding: 9px 11px;
 }
 
+.wms-open-editor,
 .wms-export-button {
   min-width: 138px;
   height: 38px;
@@ -2146,14 +2262,28 @@ body[data-view="app"] .login-screen {
 
 .wms-editor {
   display: grid;
-  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr) minmax(160px, auto);
   gap: 12px;
-  align-items: end;
+  width: 100%;
   background: var(--panel);
 }
 
-.wms-editor[hidden] {
-  display: none;
+.wms-dialog {
+  width: min(780px, calc(100vw - 40px));
+  max-height: min(560px, calc(100vh - 40px));
+  overflow: visible;
+}
+
+.wms-editor-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wms-editor-head .icon-action {
+  width: 36px;
+  min-height: 36px;
+  flex: 0 0 auto;
 }
 
 .wms-editor-head div {
@@ -2174,7 +2304,7 @@ body[data-view="app"] .login-screen {
 
 .wms-editor-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 1.45fr) minmax(170px, 0.78fr) minmax(130px, 0.55fr) minmax(140px, 0.62fr);
+  grid-template-columns: minmax(280px, 1.35fr) minmax(190px, 0.8fr) minmax(140px, 0.55fr);
   gap: 10px;
 }
 
@@ -2197,7 +2327,8 @@ body[data-view="app"] .login-screen {
   padding: 12px 16px 0;
 }
 
-.wms-summary span {
+.wms-summary span,
+.wms-summary button {
   min-height: 28px;
   display: inline-flex;
   align-items: center;
@@ -2206,6 +2337,25 @@ body[data-view="app"] .login-screen {
   border-radius: 999px;
   background: var(--soft);
   padding: 0 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.wms-summary button {
+  cursor: pointer;
+}
+
+.wms-summary button:hover,
+.wms-summary button.active {
+  border-color: color-mix(in srgb, var(--green) 46%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 72%, var(--panel));
+  color: var(--ink);
+}
+
+.wms-summary-clear {
+  color: var(--green-dark) !important;
+  font-weight: 900 !important;
 }
 
 .wms-summary strong {
@@ -2301,6 +2451,16 @@ body[data-view="app"] .login-screen {
 .wms-location-actions .danger-action {
   min-height: 34px;
   padding-inline: 10px;
+}
+
+.wms-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 2px;
+}
+
+.wms-load-more .secondary-action {
+  min-width: 190px;
 }
 
 .executive-panel {
@@ -2826,23 +2986,13 @@ dd {
   padding: 9px;
 }
 
-.reason,
-.response {
+.reason {
   margin-bottom: 0;
   color: var(--muted);
   line-height: 1.45;
 }
 
 .response {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--panel-strong);
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.response:empty {
   display: none;
 }
 
@@ -3108,7 +3258,6 @@ body[data-role="manager"] .tab-button[data-page="request"],
 body[data-role="cd"] .tab-button[data-page="request"],
 body[data-role="admin"] .tab-button[data-page="request"],
 body[data-role="compras"] .tab-button[data-page="request"],
-body[data-role="compras"] .tab-button[data-page="pending"],
 body[data-role="compras"] .approval-tab,
 body[data-role="cd"] .approval-tab,
 body[data-role="cd"] .purchase-tab,
@@ -3116,10 +3265,12 @@ body[data-role="cd"] .metrics-grid,
 body[data-role="pcm"] .approval-tab,
 body[data-role="almox"] .approval-tab,
 body[data-role="almox"] .purchase-tab,
+body .tab-button[data-page="dashboard"],
+body .tab-button[data-page="purchase"],
+body:not([data-role="admin"]) .control-nav-group,
 body:not([data-role="admin"]) .admin-tab,
 body:not([data-role="admin"]) .part-admin-tab,
 body:not([data-role="admin"]) .email-admin-tab,
-body:not([data-role="admin"]):not([data-role="manager"]) .dashboard-tab,
 body[data-role="pcm"] .almox-actions,
 body[data-role="manager"] .almox-actions,
 body[data-role="compras"] .almox-actions,

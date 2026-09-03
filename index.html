@@ -6,7 +6,7 @@
     <title>ManuPeças | JTP Transportes</title>
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="./favicon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260903-orphan-registration-request" />
+    <link rel="stylesheet" href="./styles.css?v=20260903-pickup-panel-polish" />
   </head>
   <body data-view="login">
     <section class="login-screen" id="login-screen">
@@ -88,14 +88,20 @@
           <button class="nav-toggle" type="button" id="side-nav-toggle" aria-label="Ocultar menu" aria-expanded="true">«</button>
         </div>
         <button class="tab-button active" type="button" data-page="request" data-short="PED"><span>Pedido</span></button>
-        <button class="tab-button dashboard-tab" type="button" data-page="dashboard" data-short="DASH"><span>Dashboard</span></button>
         <button class="tab-button" type="button" data-page="pending" data-short="SOL"><span>Solicitações</span></button>
         <button class="tab-button approval-tab" type="button" data-page="approval" data-short="APR" hidden><span>Aprovação de compra</span></button>
-        <button class="tab-button purchase-tab" type="button" data-page="purchase" data-short="ESP"><span>Em espera</span></button>
         <button class="tab-button" type="button" data-page="wms" data-short="WMS"><span>WMS</span></button>
         <button class="tab-button part-admin-tab" type="button" data-page="part-admin" data-short="CAD"><span>Cadastro</span></button>
-        <button class="tab-button email-admin-tab" type="button" data-page="email-admin" data-short="MAIL"><span>E-mail</span></button>
-        <button class="tab-button admin-tab" type="button" data-page="admin" data-short="ACC"><span>Acessos</span></button>
+        <details class="nav-group control-nav-group">
+          <summary>
+            <span>Controle</span>
+            <b aria-hidden="true">⌄</b>
+          </summary>
+          <div class="nav-submenu">
+            <button class="tab-button email-admin-tab" type="button" data-page="email-admin" data-short="MAIL"><span>E-mail</span></button>
+            <button class="tab-button admin-tab" type="button" data-page="admin" data-short="ACC"><span>Acessos</span></button>
+          </div>
+        </details>
         <button class="tab-button history-tab" type="button" data-page="history" data-short="HIST"><span>Histórico</span></button>
       </nav>
 
@@ -299,6 +305,7 @@
               <h2>Localização de peças</h2>
               <p>Consulte, aloque e desaloque itens do CD e BP.</p>
             </div>
+            <button class="secondary-action compact wms-export-button" type="button" id="wms-export-button">Exportar Excel</button>
           </div>
 
           <div class="wms-toolbar" aria-label="Filtros do WMS">
@@ -320,15 +327,17 @@
               <span>Prateleira</span>
               <input id="wms-shelf-filter" type="search" placeholder="Prédio, andar, apto ou WMS" autocomplete="off" />
             </label>
-            <button class="secondary-action compact wms-export-button" type="button" id="wms-export-button">Exportar Excel</button>
+            <button class="primary-action compact wms-open-editor" type="button" id="wms-open-editor">Alocar WMS</button>
           </div>
 
-          <form class="wms-editor" id="wms-editor-form">
+          <dialog class="password-dialog wms-dialog" id="wms-editor-dialog">
+          <form class="dialog-shell password-form wms-editor" id="wms-editor-form" method="dialog">
             <div class="wms-editor-head">
               <div>
                 <strong>Alocar item</strong>
                 <span id="wms-permission-message"></span>
               </div>
+              <button class="icon-action" type="button" id="wms-editor-close" aria-label="Fechar">x</button>
             </div>
             <div class="wms-editor-grid">
               <label class="wms-part-field">
@@ -353,6 +362,7 @@
             </div>
             <button class="primary-action compact" type="submit">Alocar no WMS</button>
           </form>
+          </dialog>
 
           <div class="wms-summary" id="wms-summary"></div>
           <div class="wms-list" id="wms-list"></div>
@@ -658,10 +668,6 @@
         <div class="almox-actions">
           <div class="fulfillment-panel">
             <div class="fulfillment-list"></div>
-            <label>
-            Observação do Almoxarifado
-              <textarea rows="3" placeholder="Ex.: reservado no box 3, separar no balcão, item zerado..."></textarea>
-            </label>
             <div class="field response-email-field" hidden>
             <label>E-mail de retorno</label>
               <input class="response-email" type="email" value="" />
@@ -672,9 +678,7 @@
               <small class="invoice-name"></small>
             </div>
             <div class="action-grid">
-              <button class="action available save-fulfillment" type="button"><span>1</span> Salvar atendimento</button>
-              <button class="action email-response" type="button"><span>2</span> Enviar e-mail</button>
-              <button class="action reset" type="button">Reabrir</button>
+              <button class="action available save-fulfillment" type="button">Realizar Atendimento</button>
             </div>
           </div>
           <div class="purchase-workflow">
@@ -695,16 +699,11 @@
               <label>Número do pedido de compra</label>
               <input class="purchase-order" placeholder="Ex.: 4500123456" />
             </div>
-            <div class="field buyer-note-field">
-              <label>Observação de Compras</label>
-              <textarea class="buyer-note" rows="3" placeholder="Atualização para o acompanhamento da compra"></textarea>
-            </div>
             <div class="field">
               <label>Previsão de entrega</label>
               <input class="delivery-date" type="date" />
             </div>
             <button class="action purchase-save" type="button">Salvar pedido de compra</button>
-            <button class="action purchase-email" type="button">Enviar e-mail de compra</button>
             <div class="field purchase-arrival-field">
               <label>Data real de chegada</label>
               <input class="arrival-date" type="date" />
@@ -731,7 +730,7 @@
       </article>
     </template>
 
-    <script src="./parts-data.js?v=20260812-data-refresh"></script>
+    <script src="./parts-data.js?v=20260903-lista-itens-15"></script>
     <script src="./wms-data.js?v=20260903-wms-refresh"></script>
     <script src="./cd-wms-data.js?v=20260903-wms-refresh"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -744,7 +743,7 @@
         SUPABASE_PUBLIC_KEY
       );
     </script>
-    <script src="./app.js?v=20260903-orphan-registration-request"></script>
+    <script src="./app.js?v=20260903-pickup-panel-polish"></script>
   </body>
 </html>
 

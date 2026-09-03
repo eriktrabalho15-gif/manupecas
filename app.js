@@ -67,6 +67,14 @@ const statusText = {
   retirado: "Item retirado pelo PCM",
 };
 
+const pickupBlockReasons = [
+  "Sem saldo Praxio",
+  "Sem Saldo SAP",
+  "Aguardando NF",
+  "Não Cadastrado (Praxio)",
+  "Veículo Inativo",
+];
+
 const emailStepKeys = ["request", "registration", "almox", "cd", "approval", "purchase", "receipt", "pickup", "cancellation"];
 const emailStepLabels = {
   request: "Solicitação",
@@ -119,6 +127,8 @@ let completePartOptionsCache = null;
 let wmsPartOptionsCache = {};
 let wmsPartDescriptionCache = null;
 let wmsActivePieceSearch = null;
+let wmsQuickFilter = "";
+let wmsVisibleLimit = 250;
 
 window.addEventListener("error", (event) => {
   setSupabaseStatus("error", "Erro no app");
@@ -162,6 +172,7 @@ const partRegistrationClose = document.querySelector("#part-registration-close")
 const partRegistrationMessage = document.querySelector("#part-registration-message");
 const sideNavToggle = document.querySelector("#side-nav-toggle");
 const tabButtons = document.querySelectorAll(".tab-button");
+const controlNavGroup = document.querySelector(".control-nav-group");
 const pages = document.querySelectorAll(".page");
 const filterButtons = document.querySelectorAll(".filter-button");
 const queueEyebrow = document.querySelector("#queue-eyebrow");
@@ -195,6 +206,9 @@ const wmsSearchSuggestions = document.querySelector("#wms-search-suggestions");
 const wmsStreetFilter = document.querySelector("#wms-street-filter");
 const wmsShelfFilter = document.querySelector("#wms-shelf-filter");
 const wmsExportButton = document.querySelector("#wms-export-button");
+const wmsOpenEditorButton = document.querySelector("#wms-open-editor");
+const wmsEditorDialog = document.querySelector("#wms-editor-dialog");
+const wmsEditorClose = document.querySelector("#wms-editor-close");
 const wmsEditorForm = document.querySelector("#wms-editor-form");
 const wmsEditCode = document.querySelector("#wms-edit-code");
 const wmsEditDescription = document.querySelector("#wms-edit-description");
@@ -461,11 +475,15 @@ dashboardClearFilters?.addEventListener("click", () => {
   renderDashboard();
 });
 wmsAreaFilter?.addEventListener("change", () => {
+  wmsQuickFilter = "";
+  resetWmsVisibleLimit();
+  if (wmsEditorDialog?.open && !canEditWmsArea(getWmsCurrentArea())) wmsEditorDialog.close();
   closeWmsSearchSuggestions();
   closeWmsPartSuggestions();
   renderWms();
 });
 wmsSearchFilter?.addEventListener("input", () => {
+  resetWmsVisibleLimit();
   renderWms();
   renderWmsSearchSuggestions();
 });
@@ -474,9 +492,35 @@ wmsSearchFilter?.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeWmsSearchSuggestions();
 });
 wmsSearchSuggestions?.addEventListener("mousedown", handleWmsSearchSuggestionSelect);
-wmsStreetFilter?.addEventListener("input", () => renderWms());
-wmsShelfFilter?.addEventListener("input", () => renderWms());
+wmsStreetFilter?.addEventListener("input", () => {
+  resetWmsVisibleLimit();
+  renderWms();
+});
+wmsShelfFilter?.addEventListener("input", () => {
+  resetWmsVisibleLimit();
+  renderWms();
+});
 wmsExportButton?.addEventListener("click", exportWmsToExcel);
+wmsOpenEditorButton?.addEventListener("click", () => {
+  if (!canEditWmsArea(getWmsCurrentArea())) {
+    window.alert("Seu perfil não tem permissão para editar este WMS.");
+    return;
+  }
+  wmsEditorDialog?.showModal();
+  window.setTimeout(() => wmsEditCode?.focus(), 50);
+});
+wmsEditorClose?.addEventListener("click", () => {
+  closeWmsPartSuggestions();
+  wmsEditorDialog?.close();
+});
+wmsSummary?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-wms-quick-filter]");
+  if (!button) return;
+  const nextFilter = button.dataset.wmsQuickFilter;
+  wmsQuickFilter = wmsQuickFilter === nextFilter ? "" : nextFilter;
+  resetWmsVisibleLimit();
+  renderWms();
+});
 wmsEditCode?.addEventListener("input", () => {
   wmsEditCode.dataset.code = "";
   wmsEditCode.dataset.description = "";
@@ -646,7 +690,7 @@ async function startApp() {
   body.dataset.role = currentUser.role;
   sessionLabel.textContent = `${currentUser.label} | ${currentUser.email}`;
   userGreeting.textContent = getUserGreeting(currentUser);
-  currentPage = currentUser.role === "pcm" ? "request" : currentUser.role === "compras" ? "purchase" : ["admin", "manager"].includes(currentUser.role) ? "dashboard" : "pending";
+  currentPage = currentUser.role === "pcm" ? "request" : "pending";
   currentFilter = currentUser.role === "cd" ? "cd" : "solicitacao";
   resetItemLines();
   await syncFromSupabase();
@@ -759,9 +803,11 @@ function getRequestTargetLabel(request) {
 }
 
 function setPage(page) {
+  if (page === "dashboard") page = "pending";
   if (page === "approval") page = "purchase";
   currentPage = page;
   tabButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === page));
+  if (controlNavGroup) controlNavGroup.open = page === "email-admin" || page === "admin";
   pages.forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
   if (page === "dashboard") renderDashboard();
   if (page === "history") renderHistory();
@@ -910,12 +956,8 @@ function renderNotifications() {
 }
 
 function navigateFromNotification(page, filter) {
-  if (page === "purchase") {
-    setPage("purchase");
-    return;
-  }
-  if (page === "approval") {
-    setPage("approval");
+  if (page === "purchase" || page === "approval") {
+    goToWorkQueue(filter || "compra");
     return;
   }
   if (page === "history") {
@@ -1071,6 +1113,11 @@ function normalizeRequest(request) {
       attendedAt: request.attendedAt || request.answeredAt || "",
       purchaseAt: request.purchaseAt || "",
       pickupAt: request.pickupAt || "",
+      partialPickupAt: request.partialPickupAt || "",
+      pickupBlockReason: request.pickupBlockReason || "",
+      pickupBlockAt: request.pickupBlockAt || "",
+      pickupBlockBy: request.pickupBlockBy || "",
+      pickupBlockByEmail: request.pickupBlockByEmail || "",
       withdrawnAt: request.withdrawnAt || "",
       requestedBy: request.requestedBy || "PCM",
       maintainer: request.maintainer || "",
@@ -1131,6 +1178,11 @@ function normalizeRequest(request) {
     attendedAt: request.attendedAt || "",
     purchaseAt: request.purchaseAt || "",
     pickupAt: request.pickupAt || "",
+    partialPickupAt: request.partialPickupAt || "",
+    pickupBlockReason: request.pickupBlockReason || "",
+    pickupBlockAt: request.pickupBlockAt || "",
+    pickupBlockBy: request.pickupBlockBy || "",
+    pickupBlockByEmail: request.pickupBlockByEmail || "",
     withdrawnAt: request.withdrawnAt || "",
     requestedBy: request.requestedBy || "PCM",
     maintainer: request.maintainer || "",
@@ -1191,18 +1243,18 @@ function normalizeItem(item, requestStatus = "solicitacao") {
     pendingPhotos: !hasSapCode ? normalizePhotoList(item.pendingPhotos, item.pendingPhotoName, item.pendingPhotoDataUrl) : [],
   };
   if (Number.isFinite(Number(item.availableQty)) && Number.isFinite(Number(item.purchaseQty))) {
-    return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
+    return { ...item, ...pendingData, quantity, availableQty: Number(item.availableQty), cdQty: Number(item.cdQty) || 0, purchaseQty: Number(item.purchaseQty), purchaseArrivedQty: Number(item.purchaseArrivedQty) || 0, purchaseArrivedAt: item.purchaseArrivedAt || "", purchaseArrivedDate: item.purchaseArrivedDate || "", purchaseArrivedBy: item.purchaseArrivedBy || "", withdrawnQty: Number(item.withdrawnQty) || 0, purchaseApproval: item.purchaseApproval || "" };
   }
 
   if (requestStatus === "atendimento" || requestStatus === "retirado") {
-    return { ...item, ...pendingData, quantity, availableQty: quantity, cdQty: 0, purchaseQty: 0, withdrawnQty: requestStatus === "retirado" ? quantity : 0, purchaseApproval: item.purchaseApproval || "" };
+    return { ...item, ...pendingData, quantity, availableQty: quantity, cdQty: 0, purchaseQty: 0, purchaseArrivedQty: Number(item.purchaseArrivedQty) || 0, purchaseArrivedAt: item.purchaseArrivedAt || "", purchaseArrivedDate: item.purchaseArrivedDate || "", purchaseArrivedBy: item.purchaseArrivedBy || "", withdrawnQty: requestStatus === "retirado" ? quantity : 0, purchaseApproval: item.purchaseApproval || "" };
   }
 
   if (requestStatus === "compra") {
-    return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: quantity, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "approved" };
+    return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: quantity, purchaseArrivedQty: Number(item.purchaseArrivedQty) || 0, purchaseArrivedAt: item.purchaseArrivedAt || "", purchaseArrivedDate: item.purchaseArrivedDate || "", purchaseArrivedBy: item.purchaseArrivedBy || "", withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "approved" };
   }
 
-  return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
+  return { ...item, ...pendingData, quantity, availableQty: 0, cdQty: 0, purchaseQty: 0, purchaseArrivedQty: Number(item.purchaseArrivedQty) || 0, purchaseArrivedAt: item.purchaseArrivedAt || "", purchaseArrivedDate: item.purchaseArrivedDate || "", purchaseArrivedBy: item.purchaseArrivedBy || "", withdrawnQty: 0, purchaseApproval: item.purchaseApproval || "" };
 }
 
 function normalizePurchaseApprovalFlow(items) {
@@ -3005,7 +3057,7 @@ function createCard(request) {
   const status = card.querySelector(".status-pill");
   const response = card.querySelector(".response");
   const cancelPanel = card.querySelector(".cancel-panel");
-  const note = card.querySelector("textarea");
+  const note = card.querySelector(".fulfillment-note");
   const partsList = card.querySelector(".parts-list");
   const fulfillmentPanel = card.querySelector(".fulfillment-panel");
   const fulfillmentList = card.querySelector(".fulfillment-list");
@@ -3065,7 +3117,7 @@ function createCard(request) {
   card.querySelector(".warehouse-user").textContent = request.almoxBy || "-";
   card.querySelector(".reason").textContent = request.reason;
   response.textContent = request.response;
-  note.value = request.response;
+  if (note) note.value = request.response;
   renderCancellationPanel(request, cancelPanel);
   purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : isWaitingArrivalQueue ? "Em espera" : "Solicitação SAP";
   sapDraftInput.value = request.sapDraftNumber || "";
@@ -3074,10 +3126,12 @@ function createCard(request) {
   sapRequestInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapRequestNumber);
   purchaseOrderInput.value = request.purchaseOrder || "";
   purchaseOrderInput.readOnly = currentUser.role !== "compras" || Boolean(request.purchaseOrder) || !request.sapRequestNumber;
-  buyerNoteInput.value = request.buyerNote || "";
-  buyerNoteInput.readOnly = currentUser.role !== "compras";
+  if (buyerNoteInput) {
+    buyerNoteInput.value = request.buyerNote || "";
+    buyerNoteInput.readOnly = currentUser.role !== "compras";
+  }
   deliveryDateInput.value = request.deliveryDate || "";
-  arrivalDateInput.value = request.purchaseArrivedDate || "";
+  arrivalDateInput.value = isWaitingArrivalQueue ? getTodayDateInputValue() : request.purchaseArrivedDate || "";
   const arrivalField = card.querySelector(".purchase-arrival-field");
   const arrivalLabel = arrivalField.querySelector("label");
   if (arrivalLabel) arrivalLabel.textContent = "Data de chegada / recebimento";
@@ -3090,8 +3144,8 @@ function createCard(request) {
   card.querySelector(".receipt-invoice-field").hidden = !isReceiptQueue;
   card.querySelector(".receipt-password-field").hidden = !isReceiptFlow;
   deliveryDateInput.closest(".field").hidden = true;
-  arrivalField.hidden = !isReceiptQueue;
-  arrivalDateInput.disabled = !isReceiptQueue;
+  arrivalField.hidden = !(isReceiptQueue || isWaitingArrivalQueue);
+  arrivalDateInput.disabled = !(isReceiptQueue || isWaitingArrivalQueue);
   purchaseWorkflow.classList.remove("active");
   card.querySelector(".process-map").innerHTML = createProcessMap(pickupOnlyView ? { ...request, status: "atendimento" } : request);
 
@@ -3152,60 +3206,50 @@ function createCard(request) {
   }
 
   if (isCdAttendanceQueue) {
-    card.querySelector(".save-fulfillment").hidden = true;
-    emailButton.innerHTML = "<span>1</span> Salvar e enviar e-mail";
-    emailButton.disabled = false;
-    emailButton.title = "Salvar atendimento do CD e abrir e-mail para o Almoxarifado";
-    card.querySelector(".reset").hidden = true;
+    const saveButton = card.querySelector(".save-fulfillment");
+    saveButton.hidden = false;
+    saveButton.textContent = "Realizar Atendimento";
+    saveButton.disabled = false;
+    saveButton.title = "Salvar atendimento do CD";
     card.querySelector(".transfer-invoice-field").hidden = false;
-    card.querySelector(".response-email").closest(".field").querySelector("label").textContent = "E-mail do Almoxarifado";
-    card.querySelector(".fulfillment-panel > label").firstChild.textContent = "Observação do CD";
+    card.querySelector(".response-email")?.closest(".field") && (card.querySelector(".response-email").closest(".field").hidden = true);
     transferInvoiceInput.addEventListener("change", () => {
       invoiceName.textContent = transferInvoiceInput.files.length ? `NF selecionada: ${transferInvoiceInput.files[0].name}` : "";
     });
-    emailButton.addEventListener("click", () => {
-      saveCdFulfillment(request.id, card, true);
+    saveButton.addEventListener("click", () => {
+      saveCdFulfillment(request.id, card, false);
     });
   } else if (request.status !== "cadastro" && request.status !== "compra" && request.status !== "aprovacao" && request.status !== "recebimento" && request.status !== "cancelamento" && request.status !== "cancelado") {
     card.querySelector(".transfer-invoice-field").hidden = true;
-    card.querySelector(".save-fulfillment").addEventListener("click", () => {
+    const saveButton = card.querySelector(".save-fulfillment");
+    saveButton.textContent = "Realizar Atendimento";
+    saveButton.addEventListener("click", () => {
       saveFulfillment(request.id, card, false);
-    });
-
-    card.querySelector(".email-response").addEventListener("click", () => {
-      saveFulfillment(request.id, card, true);
-    });
-
-    emailButton.disabled = !request.answeredAt;
-    emailButton.title = request.answeredAt ? "Enviar retorno por e-mail" : "Salve o atendimento antes de enviar o e-mail";
-
-    card.querySelector(".reset").addEventListener("click", () => {
-      updateRequest(request.id, "solicitacao", note.value || "");
     });
 
     if (pickupMode) {
       fulfillmentList.hidden = true;
-      card.querySelector(".response-email").closest(".field").hidden = true;
+      card.querySelector(".response-email")?.closest(".field") && (card.querySelector(".response-email").closest(".field").hidden = true);
       card.querySelector(".save-fulfillment").hidden = true;
-      emailButton.hidden = true;
-      card.querySelector(".reset").hidden = true;
-      card.querySelector(".fulfillment-panel > label").firstChild.textContent = "Observação da retirada";
+      if (emailButton) emailButton.hidden = true;
     }
   }
 
   if (pickupMode) {
     fulfillmentPanel.hidden = false;
     fulfillmentList.hidden = true;
-    card.querySelector(".response-email").closest(".field").hidden = true;
+    card.querySelector(".response-email")?.closest(".field") && (card.querySelector(".response-email").closest(".field").hidden = true);
     card.querySelector(".save-fulfillment").hidden = true;
-    emailButton.hidden = true;
-    card.querySelector(".reset").hidden = true;
-    card.querySelector(".fulfillment-panel > label").firstChild.textContent = "Observação da retirada";
+    if (emailButton) emailButton.hidden = true;
+    card.querySelector(".action-grid > .reset")?.remove();
     purchaseWorkflow.classList.remove("active");
   }
 
+  const isArrivalSelectionFlow = isWaitingArrivalQueue;
   const purchaseLines = isReceiptFlow
     ? getReceiptPendingItems(request)
+    : isArrivalSelectionFlow
+    ? getPurchaseWaitingArrivalItems(request)
     : request.items.filter((item) => isPurchaseItemActive(request, item));
   fulfillmentPanel.hidden = (request.status === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
   purchaseWorkflow.classList.toggle("active", ((isSapRequestView || isWaitingArrivalView || isReceiptQueue) && !pickupMode && !isCancellationStatus));
@@ -3225,9 +3269,10 @@ function createCard(request) {
     purchaseWorkflow.classList.remove("active");
   }
   purchaseItems.innerHTML = purchaseLines.length
-    ? purchaseLines.map((item) => {
+    ? `${isArrivalSelectionFlow ? `<label class="receipt-item-check purchase-select-all"><input class="arrival-select-all" type="checkbox" checked /> Selecionar todos que chegaram</label>` : ""}${purchaseLines.map((item) => {
       const cdReceiptQty = Number(item.cdQty) || 0;
-      const purchaseReceiptQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
+      const purchaseReceiptQty = getPurchaseArrivedQtyForReceipt(request, item);
+      const waitingArrivalQty = getPurchaseWaitingArrivalQty(request, item);
       const transferInvoiceMarkup = cdReceiptQty > 0 ? getItemInvoiceMarkup(request, item, "transfer") : "";
       const receiptNotes = isReceiptFlow
         ? [
@@ -3237,16 +3282,22 @@ function createCard(request) {
         : "";
       return `<div>
         ${isReceiptFlow ? `<label class="receipt-item-check"><input class="receipt-item-toggle" type="checkbox" data-index="${request.items.indexOf(item)}" /> Receber este item</label>` : ""}
+        ${isArrivalSelectionFlow ? `<label class="receipt-item-check"><input class="arrival-item-toggle" type="checkbox" data-index="${request.items.indexOf(item)}" checked /> Chegou este item</label>` : ""}
         <strong>${item.code}</strong>
         <span>${item.description}</span>
-        <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${getPurchasePendingQty(item)} un. aguardando`}</em>
+        <em>${isReceiptFlow ? `${cdReceiptQty + purchaseReceiptQty} un. para entrada e recebimento` : `${waitingArrivalQty || getPurchasePendingQty(item)} un. aguardando`}</em>
         ${receiptNotes ? `<small>${receiptNotes}</small>` : ""}
         ${transferInvoiceMarkup ? `<small>NF transferência: ${transferInvoiceMarkup}</small>` : ""}
       </div>`;
-    }).join("")
+    }).join("")}`
     : `<div><span>${isReceiptFlow ? "Nenhum item pendente de entrada e recebimento." : "Nenhum item pendente de compra."}</span></div>`;
+  purchaseItems.querySelector(".arrival-select-all")?.addEventListener("change", (event) => {
+    purchaseItems.querySelectorAll(".arrival-item-toggle").forEach((input) => {
+      input.checked = event.target.checked;
+    });
+  });
   purchaseSaveButton.addEventListener("click", () => savePurchaseOrder(request.id, card, false));
-  purchaseEmailButton.addEventListener("click", () => savePurchaseOrder(request.id, card, true));
+  purchaseEmailButton?.addEventListener("click", () => savePurchaseOrder(request.id, card, true));
   sapCopyItemsButton.addEventListener("click", () => copySapItems(request, purchaseLines, sapCopyMessage));
   sapRequestSaveButton.addEventListener("click", () => saveSapRequestNumber(request.id, card));
   purchaseArrivalSaveButton.addEventListener("click", () => registerPurchaseArrival(request.id, card));
@@ -3255,9 +3306,9 @@ function createCard(request) {
     receiptInvoiceName.textContent = receiptInvoiceInput.files.length ? `NF fornecedor selecionada: ${receiptInvoiceInput.files[0].name}` : request.receiptInvoiceName ? `NF fornecedor anexada: ${request.receiptInvoiceName}` : "";
   });
   purchaseSaveButton.textContent = "Salvar pedido de compra";
-  purchaseArrivalSaveButton.textContent = "Confirmar chegada da peça";
+  purchaseArrivalSaveButton.textContent = isArrivalSelectionFlow ? "Confirmar chegada selecionada" : "Confirmar chegada da peça";
   purchaseSaveButton.hidden = !isBuyerPurchaseQueue;
-  purchaseEmailButton.hidden = !isBuyerPurchaseQueue;
+  if (purchaseEmailButton) purchaseEmailButton.hidden = true;
   sapCopyItemsButton.hidden = !isSapRequestView;
   sapCopyMessage.hidden = !isSapRequestView;
   sapRequestSaveButton.textContent = request.sapDraftNumber ? "Salvar solicitação SAP" : "Salvar esboço SAP";
@@ -3268,51 +3319,99 @@ function createCard(request) {
   sapRequestInput.closest(".field").hidden = (isReceiptFlow && !request.sapRequestNumber) || (isSapRequestView && (currentUser.role !== "almox" || !request.sapDraftNumber));
   purchaseOrderInput.closest(".field").hidden = true;
   deliveryDateInput.closest(".field").hidden = true;
-  buyerNoteInput.closest(".field").hidden = true;
+  const buyerNoteField = buyerNoteInput?.closest(".field");
+  if (buyerNoteField) buyerNoteField.hidden = true;
   purchaseSaveButton.disabled = currentUser.role === "compras" && !request.sapRequestNumber;
   purchaseSaveButton.title = request.sapRequestNumber ? "" : "Aguardando o Almoxarifado informar a solicitação SAP";
-  purchaseEmailButton.disabled = !request.purchaseOrder;
-  purchaseEmailButton.title = request.purchaseOrder ? "Enviar e-mail com pedido de compra" : "Informe e salve o pedido de compra antes de enviar";
+  if (purchaseEmailButton) {
+    purchaseEmailButton.disabled = true;
+    purchaseEmailButton.title = "";
+  }
   const hasReceiptLine = getReceiptPendingItems(request).length > 0;
   purchaseArrivalButton.disabled = !hasReceiptLine;
   purchaseArrivalButton.title = hasReceiptLine ? "Confirmar recebimento, entrada SAP e liberar retirada" : "Aguardando item recebido do CD ou compra com data de chegada";
 
   if (pickupMode) {
     const actionGrid = card.querySelector(".action-grid");
+    const partialPickup = isPickupReceiptPartial(request);
     const pickupFields = document.createElement("div");
     pickupFields.className = "pickup-confirmation-fields";
     pickupFields.innerHTML = `
-      <label class="field">
+      <label class="field pickup-praxio-field">
         Número da requisição Praxio
         <input class="pickup-praxio" type="text" value="${escapeAttr(request.praxioRequisition || "")}" placeholder="Ex.: 123456" />
       </label>
-      <label class="field">
+      <label class="field pickup-person-field">
         Quem está retirando
         <input class="pickup-person" type="text" value="${escapeAttr(request.withdrawnPerson || "")}" placeholder="Nome e sobrenome" />
       </label>
+      <div class="pickup-pending-panel" ${request.praxioRequisition ? "hidden" : ""}>
+        <label class="field pickup-block-reason-field">
+          Motivo da baixa pendente
+          <select class="pickup-block-reason">
+            <option value="">Selecione o motivo</option>
+            ${pickupBlockReasons.map((reason) => `<option value="${escapeAttr(reason)}" ${request.pickupBlockReason === reason ? "selected" : ""}>${escapeHtml(reason)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="secondary-action pickup-block-save" type="button">Salvar motivo</button>
+        <div class="pickup-block-status">${request.pickupBlockAt ? `Salvo: ${escapeHtml(request.pickupBlockReason || "-")} em ${escapeHtml(formatDate(request.pickupBlockAt))} por ${escapeHtml(request.pickupBlockBy || "-")}` : "Obrigatório quando a baixa Praxio ainda não tiver número."}</div>
+      </div>
+      <button class="secondary-action pickup-pdf-button" type="button">${partialPickup ? "Baixar comprovante parcial / requisição" : "Baixar comprovante / requisição"}</button>
       <small class="pickup-message"></small>
     `;
     actionGrid.before(pickupFields);
-    const doneButton = document.createElement("button");
-    doneButton.className = "action reset";
-    doneButton.type = "button";
-    doneButton.textContent = "Confirmar retirada do PCM";
-    doneButton.addEventListener("click", async () => {
+    const syncPickupBlockReason = () => {
+      const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
+      pickupFields.querySelector(".pickup-pending-panel").hidden = Boolean(praxio);
+    };
+    pickupFields.querySelector(".pickup-praxio").addEventListener("input", syncPickupBlockReason);
+    syncPickupBlockReason();
+    pickupFields.querySelector(".pickup-block-save").addEventListener("click", async () => {
+      const reason = pickupFields.querySelector(".pickup-block-reason").value;
+      const message = pickupFields.querySelector(".pickup-message");
+      message.textContent = "";
+      if (!reason) {
+        message.textContent = "Selecione o motivo da pendência antes de salvar.";
+        pickupFields.querySelector(".pickup-block-reason").focus();
+        return;
+      }
+      await registerPickupBlock(request.id, reason);
+    });
+    pickupFields.querySelector(".pickup-pdf-button").addEventListener("click", () => {
       const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
       const person = pickupFields.querySelector(".pickup-person").value.trim();
       const message = pickupFields.querySelector(".pickup-message");
-      if (!praxio) {
-        message.textContent = "Informe o número da requisição Praxio.";
-        pickupFields.querySelector(".pickup-praxio").focus();
+      message.textContent = "";
+      if (!person) {
+        message.textContent = "Informe quem está retirando para baixar o comprovante.";
+        pickupFields.querySelector(".pickup-person").focus();
         return;
       }
+      downloadPickupReceiptPdf(request, { praxio, person, note: "" });
+    });
+    const doneButton = document.createElement("button");
+    doneButton.className = "action available pickup-confirm-button";
+    doneButton.type = "button";
+    doneButton.textContent = partialPickup ? "Confirmar retirada parcial" : "Confirmar retirada do PCM";
+    doneButton.addEventListener("click", async () => {
+      const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
+      const person = pickupFields.querySelector(".pickup-person").value.trim();
+      const blockReason = pickupFields.querySelector(".pickup-block-reason").value;
+      const message = pickupFields.querySelector(".pickup-message");
       if (!person) {
         message.textContent = "Informe quem está retirando.";
         pickupFields.querySelector(".pickup-person").focus();
         return;
       }
+      if (!praxio && !blockReason) {
+        message.textContent = "Selecione o motivo quando a baixa Praxio estiver pendente.";
+        pickupFields.querySelector(".pickup-block-reason").focus();
+        return;
+      }
       if (confirmAlmoxPassword()) {
-        await markWithdrawn(request.id, note.value || "Itens retirados pelo PCM.", { praxio, person });
+        const fallbackNote = partialPickup ? "Retirada parcial registrada pelo PCM." : "Itens retirados pelo PCM.";
+        const pendingNote = !praxio ? ` Baixa Praxio pendente: ${blockReason}.` : "";
+        await markWithdrawn(request.id, `${note?.value || fallbackNote}${pendingNote}`, { praxio, person, blockReason });
       }
     });
     actionGrid.append(doneButton);
@@ -3635,8 +3734,7 @@ async function saveFulfillment(id, card, shouldEmail) {
     }
     return item;
   });
-  const note = card.querySelector("textarea").value.trim();
-  const response = note || buildResponseText(finalItems);
+  const response = buildResponseText(finalItems);
   const updatedRequest = { ...request, items: finalItems, status, response, answeredAt: new Date().toISOString() };
   updatedRequest.attendedAt = updatedRequest.answeredAt;
   updatedRequest.purchaseAt = status === "compra" ? updatedRequest.answeredAt : request.purchaseAt || "";
@@ -3677,8 +3775,7 @@ async function saveCdFulfillment(id, card, shouldEmail) {
     }
     return item;
   });
-  const note = card.querySelector("textarea").value.trim();
-  const response = note || buildCdResponseText(finalItems);
+  const response = buildCdResponseText(finalItems);
   const invoiceInput = card.querySelector(".transfer-invoice");
   const selectedInvoice = invoiceInput.files.length ? invoiceInput.files[0].name : "";
   const selectedInvoiceDataUrl = invoiceInput.files.length ? await readFileAsDataUrl(invoiceInput.files[0]) : "";
@@ -3727,7 +3824,7 @@ async function savePurchaseOrder(id, card, shouldEmail) {
 
   const purchaseOrder = request.purchaseOrder || card.querySelector(".purchase-order").value.trim();
   const deliveryDate = card.querySelector(".delivery-date").value;
-  const buyerNote = card.querySelector(".buyer-note").value.trim();
+  const buyerNote = card.querySelector(".buyer-note")?.value.trim() || "";
   if (!purchaseOrder) {
     card.querySelector(".purchase-order").focus();
     return;
@@ -3821,16 +3918,41 @@ async function registerPurchaseArrival(id, card) {
   if (currentUser.role !== "almox") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
+  const selectedArrivalIndexes = Array.from(card.querySelectorAll(".arrival-item-toggle:checked"))
+    .map((input) => Number(input.dataset.index))
+    .filter((index) => Number.isInteger(index));
+  if (selectedArrivalIndexes.length === 0) {
+    window.alert("Selecione pelo menos um item que chegou.");
+    return;
+  }
   prepareMailPopup();
-  const arrivedDate = getTodayDateInputValue();
+  const arrivedDate = card.querySelector(".arrival-date")?.value || getTodayDateInputValue();
   const now = new Date().toISOString();
+  const selectedSet = new Set(selectedArrivalIndexes);
+  let arrivedItemCount = 0;
+  const items = request.items.map((item, index) => {
+    if (!selectedSet.has(index) || getPurchaseWaitingArrivalQty(request, item) <= 0) return item;
+    arrivedItemCount += 1;
+    return {
+      ...item,
+      purchaseArrivedQty: getPurchasePendingQty(item),
+      purchaseArrivedDate: arrivedDate,
+      purchaseArrivedAt: now,
+      purchaseArrivedBy: currentUser.name || currentUser.label,
+    };
+  });
+  if (arrivedItemCount === 0) {
+    window.alert("Nenhum item selecionado está aguardando chegada.");
+    return;
+  }
   const updatedRequest = {
     ...request,
+    items,
     status: "recebimento",
     purchaseArrivedDate: arrivedDate,
     purchaseArrivedAt: now,
     purchaseArrivedBy: currentUser.name || currentUser.label,
-    response: `Item comprado chegou ao Almoxarifado em ${formatDateOnly(arrivedDate)}. Pendente entrada e recebimento no SAP.`,
+    response: `${formatItemCount(arrivedItemCount)} de compra chegaram ao Almoxarifado em ${formatDateOnly(arrivedDate)}. Pendente entrada e recebimento no SAP.`,
   };
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
@@ -3879,20 +4001,21 @@ async function confirmReceiptEntry(id, card) {
   const receiptInvoiceName = selectedReceiptInvoice?.name || request.receiptInvoiceName || "";
   const receiptInvoiceDataUrl = selectedReceiptInvoice ? await readFileAsDataUrl(selectedReceiptInvoice) : request.receiptInvoiceDataUrl || "";
   const now = new Date().toISOString();
-  const hadPurchaseArrival = isPurchaseArrivalRegistered(request);
   const selectedReceiptIndexSet = new Set(selectedReceiptIndexes);
   const items = request.items.map((item) => {
     const index = request.items.indexOf(item);
     if (!selectedReceiptIndexSet.has(index) || !isReceiptItemPending(request, item)) return item;
-    const purchasedQty = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" ? getPurchasePendingQty(item) : 0;
+    const purchasedQty = getPurchaseArrivedQtyForReceipt(request, item);
     const cdQty = Number(item.cdQty) || 0;
+    const remainingPurchaseQty = Math.max(0, getPurchasePendingQty(item) - purchasedQty);
     return {
       ...item,
       availableQty: (Number(item.availableQty) || 0) + purchasedQty + cdQty,
       cdReceivedQty: (Number(item.cdReceivedQty) || 0) + cdQty,
       purchaseReceivedQty: (Number(item.purchaseReceivedQty) || 0) + purchasedQty,
       cdQty: 0,
-      purchaseQty: purchasedQty > 0 ? 0 : Number(item.purchaseQty) || getPurchasePendingQty(item),
+      purchaseQty: purchasedQty > 0 ? remainingPurchaseQty : Number(item.purchaseQty) || getPurchasePendingQty(item),
+      purchaseArrivedQty: purchasedQty > 0 ? 0 : Number(item.purchaseArrivedQty) || 0,
       receiptNumber,
       receiptAt: now,
       receiptBy: currentUser.name || currentUser.label,
@@ -3903,15 +4026,17 @@ async function confirmReceiptEntry(id, card) {
     };
   });
   const hasApprovedPurchaseAfterReceipt = items.some((item) => getPurchasePendingQty(item) > 0 && item.purchaseApproval === "approved");
+  const hasReceiptPendingAfterReceipt = getReceiptPendingItems({ ...request, items }).length > 0;
   const hasPickupAfterReceipt = items.some(isPickupItemPending);
+  const hasWaitingArrivalAfterReceipt = getPurchaseWaitingArrivalItems({ ...request, items }).length > 0;
   const updatedRequest = {
     ...request,
-    status: hasPickupAfterReceipt ? "atendimento" : hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
+    status: hasPickupAfterReceipt ? "atendimento" : hasReceiptPendingAfterReceipt ? "recebimento" : hasWaitingArrivalAfterReceipt || hasApprovedPurchaseAfterReceipt ? "compra" : "atendimento",
     items: hasApprovedPurchaseAfterReceipt
       ? items.map((item) => (getPurchaseBaseQty(item) > 0 ? { ...item, purchaseApproval: "approved" } : item))
       : items,
-    purchaseArrivedDate: hadPurchaseArrival ? purchaseArrivedDate : request.purchaseArrivedDate || "",
-    purchaseArrivedAt: hadPurchaseArrival ? request.purchaseArrivedAt || now : request.purchaseArrivedAt || "",
+    purchaseArrivedDate: hasReceiptPendingAfterReceipt || hasWaitingArrivalAfterReceipt ? request.purchaseArrivedDate || purchaseArrivedDate : "",
+    purchaseArrivedAt: hasReceiptPendingAfterReceipt || hasWaitingArrivalAfterReceipt ? request.purchaseArrivedAt || now : "",
     receiptNumber,
     receiptInvoiceName,
     receiptInvoiceDataUrl,
@@ -3965,7 +4090,7 @@ async function markWithdrawn(id, response, pickupData = {}) {
       return { ...item, withdrawnQty: Math.max(getWithdrawnQty(item), releasable) };
     });
     const allWithdrawn = items.every((item) => getWithdrawnQty(item) >= (Number(item.quantity) || 0));
-    const nextStatus = allWithdrawn ? "retirado" : request.status;
+    const nextStatus = allWithdrawn ? "retirado" : getStatusAfterPartialPickup({ ...request, items });
     return {
       ...request,
       items,
@@ -3975,11 +4100,34 @@ async function markWithdrawn(id, response, pickupData = {}) {
       withdrawnPerson: pickupData.person || request.withdrawnPerson || "",
       withdrawnConfirmedBy: currentUser.name || currentUser.label,
       withdrawnConfirmedByEmail: currentUser.email,
+      pickupBlockReason: pickupData.praxio ? "" : pickupData.blockReason || request.pickupBlockReason || "",
+      pickupBlockAt: pickupData.praxio ? "" : now,
+      pickupBlockBy: pickupData.praxio ? "" : currentUser.name || currentUser.label,
+      pickupBlockByEmail: pickupData.praxio ? "" : currentUser.email,
       pickupAt: request.pickupAt || now,
+      partialPickupAt: allWithdrawn ? request.partialPickupAt || "" : now,
       withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "",
     };
   });
   await saveRequestsSafely("retirada");
+  render();
+}
+
+async function registerPickupBlock(id, reason) {
+  const now = new Date().toISOString();
+  requests = requests.map((request) => {
+    if (request.id !== id) return request;
+    return {
+      ...request,
+      response: `Baixa pendente: ${reason}. Registrado em ${formatDate(now)} por ${currentUser.name || currentUser.label}.`,
+      pickupBlockReason: reason,
+      pickupBlockAt: now,
+      pickupBlockBy: currentUser.name || currentUser.label,
+      pickupBlockByEmail: currentUser.email,
+      pickupAt: request.pickupAt || now,
+    };
+  });
+  await saveRequestsSafely("pendência de baixa");
   render();
 }
 
@@ -4064,6 +4212,29 @@ function getPurchasePendingQtySum(request) {
   return request.items.reduce((sum, item) => sum + getPurchasePendingQty(item), 0);
 }
 
+function hasItemLevelPurchaseArrivalData(request) {
+  return Boolean(request?.items?.some((item) => Number(item.purchaseArrivedQty) > 0 || item.purchaseArrivedAt || item.purchaseArrivedDate));
+}
+
+function getPurchaseArrivedQtyForReceipt(request, item) {
+  if (item.purchaseApproval !== "approved") return 0;
+  const pending = getPurchasePendingQty(item);
+  const arrived = Number(item.purchaseArrivedQty) || 0;
+  if (arrived > 0) return Math.min(pending, arrived);
+  if (!hasItemLevelPurchaseArrivalData(request) && isPurchaseArrivalRegistered(request)) return pending;
+  return 0;
+}
+
+function getPurchaseWaitingArrivalQty(request, item) {
+  if (item.purchaseApproval !== "approved") return 0;
+  return Math.max(0, getPurchasePendingQty(item) - getPurchaseArrivedQtyForReceipt(request, item));
+}
+
+function getPurchaseWaitingArrivalItems(request) {
+  if (!request?.items) return [];
+  return request.items.filter((item) => isPurchaseItemActive(request, item) && getPurchaseWaitingArrivalQty(request, item) > 0);
+}
+
 function getDisplayItemsForCurrentView(request) {
   if (!request?.items) return [];
   if (currentFilter === "recebimento") {
@@ -4074,15 +4245,15 @@ function getDisplayItemsForCurrentView(request) {
   }
   if (currentFilter === "atendimento" && (currentUser?.role === "pcm" || currentUser?.role === "almox")) {
     const pickupItems = request.items.filter(isPickupItemPending);
-    return pickupItems.length ? pickupItems : request.items;
+    return pickupItems;
   }
   if (currentFilter === "compra") {
     const purchaseItems = request.items.filter((item) => isPurchaseItemActive(request, item));
     return purchaseItems.length ? purchaseItems : request.items;
   }
   if (currentFilter === "espera") {
-    const purchaseItems = request.items.filter((item) => isPurchaseItemActive(request, item));
-    return purchaseItems.length ? purchaseItems : request.items;
+    const purchaseItems = getPurchaseWaitingArrivalItems(request);
+    return purchaseItems;
   }
   return request.items;
 }
@@ -4101,7 +4272,7 @@ function isPurchaseItemActive(request, item) {
 }
 
 function isPurchaseQueuePending(request) {
-  return Boolean(request && !isPurchaseArrivalRegistered(request) && request.items?.some((item) => isPurchaseItemActive(request, item)));
+  return Boolean(request && request.items?.some((item) => isPurchaseItemActive(request, item)));
 }
 
 function isSapRequestPending(request) {
@@ -4109,7 +4280,7 @@ function isSapRequestPending(request) {
 }
 
 function isWaitingArrivalPending(request) {
-  return Boolean(isPurchaseQueuePending(request) && request.sapRequestNumber && !isPurchaseArrivalRegistered(request));
+  return Boolean(request?.sapRequestNumber && getPurchaseWaitingArrivalItems(request).length > 0);
 }
 
 function formatSapExtractionLines(items) {
@@ -4151,11 +4322,11 @@ function getTodayDateInputValue() {
 }
 
 function isPurchaseArrivalRegistered(request) {
-  return Boolean(request?.purchaseArrivedAt || request?.purchaseArrivedDate);
+  return Boolean(request?.purchaseArrivedAt || request?.purchaseArrivedDate || hasItemLevelPurchaseArrivalData(request));
 }
 
 function hasPurchasedItemWaitingReceipt(request) {
-  return Boolean(request?.items?.some((item) => item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0)) && isPurchaseArrivalRegistered(request);
+  return Boolean(getReceiptPendingItems(request).some((item) => getPurchaseArrivedQtyForReceipt(request, item) > 0));
 }
 
 function hasPurchaseReceipt(request) {
@@ -4164,7 +4335,7 @@ function hasPurchaseReceipt(request) {
 
 function isReceiptItemPending(request, item) {
   const cdArrived = Number(item.cdQty) > 0;
-  const purchaseArrived = isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0;
+  const purchaseArrived = getPurchaseArrivedQtyForReceipt(request, item) > 0;
   return cdArrived || purchaseArrived;
 }
 
@@ -4196,7 +4367,7 @@ function getRequestStatusText(request, displayStatus = getDisplayStatus(request)
   if (displayStatus === "compra") {
     if (!request.sapDraftNumber) return "Pendente esboço SAP pelo Almoxarifado";
     if (!request.sapRequestNumber) return "Pendente aprovação do esboço SAP";
-    if (!isPurchaseArrivalRegistered(request)) return "Em espera da chegada da peça";
+    if (isWaitingArrivalPending(request)) return "Em espera da chegada da peça";
   }
   return statusText[displayStatus] || displayStatus || "-";
 }
@@ -4236,7 +4407,7 @@ function getItemPurchaseStatus(request, item) {
   if (need <= 0) return "Sem compra";
   if (item.purchaseApproval === "approved") {
     if ((Number(item.purchaseReceivedQty) || 0) > 0) return "Recebido pelo Almoxarifado";
-    if (isPurchaseArrivalRegistered(request)) return "Pendente entrada e recebimento";
+    if (getPurchaseArrivedQtyForReceipt(request, item) > 0) return "Pendente entrada e recebimento";
     if (request.purchaseOrder) return request.deliveryDate ? "Pendente de chegada e recebimento" : "Pendente de data de chegada";
     if (request.sapRequestNumber) return "Solicitação SAP aberta";
     if (request.sapDraftNumber) return "Aguardando aprovação do esboço SAP";
@@ -4251,7 +4422,7 @@ function getItemStageStatus(request, item) {
   if (isPendingRegistrationItem(item)) return "Aguardando cadastro SAP";
   if (getWithdrawnQty(item) >= (Number(item.quantity) || 0)) return "Retirado";
   if (getDisplayStatus(request) === "recebimento" && (Number(item.cdQty) || 0) > 0) return "Pendente entrada e recebimento";
-  if (isPurchaseArrivalRegistered(request) && item.purchaseApproval === "approved" && getPurchasePendingQty(item) > 0) return "Pendente entrada e recebimento";
+  if (getPurchaseArrivedQtyForReceipt(request, item) > 0) return "Pendente entrada e recebimento";
   if (request.status === "cd" && getCdPendingQty(item) > 0) return "Pendente CD";
   if (getPurchaseBaseQty(item) > 0) return getItemPurchaseStatus(request, item);
   if (getPickupReleasedQty(item) > 0) return "Liberado para retirada";
@@ -4280,6 +4451,259 @@ function isPickupItemPending(item) {
 
 function hasPickupPending(request) {
   return request.items.some(isPickupItemPending);
+}
+
+function hasPartialWithdrawal(request) {
+  const items = request?.items || [];
+  return items.some((item) => getWithdrawnQty(item) > 0)
+    && items.some((item) => getWithdrawnQty(item) < (Number(item.quantity) || 0));
+}
+
+function isPickupReceiptPartial(request) {
+  const items = request?.items || [];
+  return items.some((item) => {
+    const quantity = Number(item.quantity) || 0;
+    const releasedNow = Math.max(0, getPickupReleasedQty(item) - getWithdrawnQty(item));
+    return releasedNow > 0 && getWithdrawnQty(item) + releasedNow < quantity;
+  });
+}
+
+function getStatusAfterPartialPickup(request) {
+  const items = request?.items || [];
+  if (getReceiptPendingItems(request).length > 0) return "recebimento";
+  if (items.some((item) => getPurchasePendingQty(item) > 0)) return "compra";
+  if (items.some((item) => getCdPendingQty(item) > 0)) return "cd";
+  if (items.some(isPickupItemPending)) return "atendimento";
+  return request?.status || "atendimento";
+}
+
+function getPickupReceiptItems(request) {
+  return (request.items || [])
+    .map((item) => {
+      const released = getPickupReleasedQty(item);
+      const withdrawn = getWithdrawnQty(item);
+      const pending = Math.max(0, released - withdrawn);
+      return {
+        code: item.code || "-",
+        description: item.description || "-",
+        requestedQty: Number(item.quantity) || 0,
+        releasedQty: released,
+        pendingQty: pending,
+        withdrawnQty: withdrawn,
+      };
+    })
+    .filter((item) => item.pendingQty > 0 || item.releasedQty > 0);
+}
+
+function downloadPickupReceiptPdf(request, pickupData = {}) {
+  const items = getPickupReceiptItems(request);
+  if (!items.length) {
+    window.alert("Nenhum item liberado para retirada nesta solicitação.");
+    return;
+  }
+
+  const blob = createPickupReceiptPdfBlob(request, items, pickupData);
+  const receiptType = isPickupReceiptPartial(request) ? "Retirada_Parcial" : "Retirada";
+  const praxio = pickupData.praxio || request.praxioRequisition || "sem-praxio";
+  const dateKey = new Date().toISOString().slice(0, 10);
+  const fileName = `ManuPecas_Comprovante_${receiptType}_${sanitizeFileName(request.id || "solicitacao")}_Praxio_${sanitizeFileName(praxio)}_${dateKey}.pdf`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function sanitizeFileName(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "arquivo";
+}
+
+function pdfSafeText(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitPdfLine(text, maxLength = 92) {
+  const words = pdfSafeText(text).split(" ").filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    if (!current) {
+      current = word;
+      return;
+    }
+    if (`${current} ${word}`.length > maxLength) {
+      lines.push(current);
+      current = word;
+      return;
+    }
+    current = `${current} ${word}`;
+  });
+  if (current || !words.length) lines.push(current);
+  return lines;
+}
+
+function escapePdfString(value) {
+  return pdfSafeText(value).replace(/[\\()]/g, "\\$&");
+}
+
+function createPickupReceiptPdfBlob(request, items, pickupData = {}) {
+  const printedAt = new Date().toISOString();
+  const receiptTitle = isPickupReceiptPartial(request) ? "COMPROVANTE DE RETIRADA PARCIAL" : "COMPROVANTE DE RETIRADA";
+  const blue = "0.05 0.22 0.58";
+  const gray = "0.31 0.38 0.41";
+  const black = "0 0 0";
+  const pageWidth = 612;
+  const pageHeight = 842;
+  const margin = 28;
+  const maxBottom = 640;
+  const pages = [];
+  let commands = [];
+  let cursorTop = 238;
+
+  const toY = (top, height = 0) => pageHeight - top - height;
+  const strokeColor = (rgb) => commands.push(`${rgb} RG`);
+  const fillColor = (rgb) => commands.push(`${rgb} rg`);
+  const lineWidth = (value) => commands.push(`${value} w`);
+  const rect = (x, top, width, height) => commands.push(`${x} ${toY(top, height)} ${width} ${height} re S`);
+  const text = (value, x, top, size = 8, font = "F1", color = black) => {
+    fillColor(color);
+    commands.push(`BT /${font} ${size} Tf ${x} ${toY(top)} Td (${escapePdfString(value)}) Tj ET`);
+  };
+  const wrappedText = (value, x, top, maxChars, lineHeight = 10, size = 8, font = "F1", color = black) => {
+    splitPdfLine(value, maxChars).forEach((line, index) => text(line, x, top + (index * lineHeight), size, font, color));
+  };
+  const labelValueBox = (label, value, x, top, width, height) => {
+    rect(x, top, width, height);
+    text(label.toUpperCase(), x + 5, top + 8, 5.8, "F2", blue);
+    wrappedText(value || "-", x + 5, top + 19, Math.max(12, Math.floor(width / 4.5)), 8.5, 8, "F1", black);
+  };
+  const drawHeader = (pageNumber, totalPages) => {
+    commands = [];
+    lineWidth(0.55);
+    strokeColor(blue);
+    rect(margin, 18, pageWidth - (margin * 2), 38);
+    text("JTP TRANSPORTES, SERVICOS, GERENCIAMENTO E RH LTDA", 34, 31, 8, "F2", blue);
+    text("ManuPecas | Requisicao oficial de retirada", 34, 43, 7, "F1", gray);
+    rect(420, 18, 164, 38);
+    text(receiptTitle, 430, 31, 7.8, "F2", black);
+    text(`Pagina ${pageNumber}/${totalPages}`, 520, 45, 7, "F1", gray);
+
+    rect(margin, 66, pageWidth - (margin * 2), 62);
+    text("DADOS DA SOLICITACAO", 34, 78, 7, "F2", blue);
+    labelValueBox("Solicitacao", request.id || "-", 34, 88, 130, 30);
+    labelValueBox("Aplicacao", getRequestTargetLabel(request), 164, 88, 122, 30);
+    labelValueBox("Prioridade", request.priority || "-", 286, 88, 98, 30);
+    labelValueBox("Abertura", formatDateOrDash(request.createdAt), 384, 88, 96, 30);
+    labelValueBox("Emissao", formatDate(printedAt), 480, 88, 98, 30);
+
+    rect(margin, 136, pageWidth - (margin * 2), 70);
+    text("RESPONSAVEIS E BAIXA", 34, 148, 7, "F2", blue);
+    labelValueBox("Requisicao Praxio", pickupData.praxio || request.praxioRequisition || "-", 34, 158, 128, 34);
+    labelValueBox("Quem retirou", pickupData.person || request.withdrawnPerson || "-", 162, 158, 160, 34);
+    labelValueBox("PCM solicitante", request.requestedBy || "-", 322, 158, 126, 34);
+    labelValueBox("Almoxarife", currentUser?.name || currentUser?.label || "-", 448, 158, 130, 34);
+
+    rect(margin, 216, pageWidth - (margin * 2), 22);
+    text("CODIGO", 38, 229, 6.5, "F2", blue);
+    text("DESCRICAO DO ITEM", 116, 229, 6.5, "F2", blue);
+    text("SOL.", 386, 229, 6.5, "F2", blue);
+    text("LIB.", 430, 229, 6.5, "F2", blue);
+    text("RETIRADA", 478, 229, 6.5, "F2", blue);
+    cursorTop = 238;
+  };
+  const drawFooter = () => {
+    const reasonTop = Math.max(cursorTop + 14, 608);
+    rect(margin, reasonTop, pageWidth - (margin * 2), 64);
+    text("MOTIVO / OBSERVACAO", 34, reasonTop + 12, 6.5, "F2", blue);
+    wrappedText(request.reason || "-", 34, reasonTop + 25, 90, 9, 7.5, "F1", black);
+    if (pickupData.note) wrappedText(`Obs. retirada: ${pickupData.note}`, 34, reasonTop + 45, 90, 9, 7.5, "F1", black);
+
+    rect(margin, 692, 270, 70);
+    text("ASSINATURA DE QUEM RETIROU", 34, 704, 6.5, "F2", blue);
+    commands.push("0.05 0.22 0.58 RG 0.45 w 50 110 m 260 110 l S");
+    text("Nome:", 40, 744, 7, "F1", gray);
+    text("Documento / matricula:", 40, 756, 7, "F1", gray);
+
+    rect(314, 692, 270, 70);
+    text("ASSINATURA DO ALMOXARIFE", 320, 704, 6.5, "F2", blue);
+    commands.push("0.05 0.22 0.58 RG 0.45 w 336 110 m 546 110 l S");
+    text("Nome:", 320, 744, 7, "F1", gray);
+    text("Data:", 320, 756, 7, "F1", gray);
+  };
+
+  const rows = items.map((item, index) => ({
+    ...item,
+    index: index + 1,
+    descriptionLines: splitPdfLine(item.description || "-", 54),
+  }));
+  let pageNumber = 1;
+  drawHeader(pageNumber, "?");
+  rows.forEach((item) => {
+    const rowHeight = Math.max(28, 14 + (item.descriptionLines.length * 9));
+    if (cursorTop + rowHeight > maxBottom) {
+      pages.push(commands);
+      pageNumber += 1;
+      drawHeader(pageNumber, "?");
+    }
+    rect(margin, cursorTop, pageWidth - (margin * 2), rowHeight);
+    text(`${item.index}. ${item.code}`, 38, cursorTop + 13, 8, "F2", black);
+    item.descriptionLines.forEach((line, lineIndex) => text(line, 116, cursorTop + 13 + (lineIndex * 9), 7.4, "F1", black));
+    text(item.requestedQty, 392, cursorTop + 13, 8, "F1", black);
+    text(item.releasedQty, 436, cursorTop + 13, 8, "F1", black);
+    text(item.pendingQty, 494, cursorTop + 13, 8.5, "F2", black);
+    cursorTop += rowHeight;
+  });
+  drawFooter();
+  pages.push(commands);
+
+  const totalPages = pages.length;
+  const renderedPages = pages.map((pageCommands, index) => pageCommands.map((command) => command.replace("Pagina " + (index + 1) + "/?", `Pagina ${index + 1}/${totalPages}`)));
+  const objects = [];
+  const pageRefs = [];
+  const addObject = (body) => {
+    objects.push(body);
+    return objects.length;
+  };
+
+  const catalogRef = addObject("<< /Type /Catalog /Pages 2 0 R >>");
+  const pagesRef = addObject("<< /Type /Pages /Kids [] /Count 0 >>");
+  const fontRef = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  const fontBoldRef = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
+
+  renderedPages.forEach((pageCommands) => {
+    const content = pageCommands.join("\n");
+    const contentRef = addObject(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    const pageRef = addObject(`<< /Type /Page /Parent ${pagesRef} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontRef} 0 R /F2 ${fontBoldRef} 0 R >> >> /Contents ${contentRef} 0 R >>`);
+    pageRefs.push(pageRef);
+  });
+
+  objects[pagesRef - 1] = `<< /Type /Pages /Kids [${pageRefs.map((ref) => `${ref} 0 R`).join(" ")}] /Count ${pageRefs.length} >>`;
+  const chunks = ["%PDF-1.4\n%1234\n"];
+  const offsets = [0];
+  objects.forEach((body, index) => {
+    offsets.push(chunks.join("").length);
+    chunks.push(`${index + 1} 0 obj\n${body}\nendobj\n`);
+  });
+  const xrefOffset = chunks.join("").length;
+  chunks.push(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`);
+  offsets.slice(1).forEach((offset) => {
+    chunks.push(`${String(offset).padStart(10, "0")} 00000 n \n`);
+  });
+  chunks.push(`trailer\n<< /Size ${objects.length + 1} /Root ${catalogRef} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+  return new Blob(chunks, { type: "application/pdf" });
 }
 
 function getQtyStepClass(request, item, step) {
@@ -4562,8 +4986,13 @@ function handleWmsSearchSuggestionSelect(event) {
   wmsSearchFilter.value = description
     ? `${button.dataset.wmsSearchCode} - ${description}`
     : button.dataset.wmsSearchCode;
+  resetWmsVisibleLimit();
   closeWmsSearchSuggestions();
   renderWms();
+}
+
+function resetWmsVisibleLimit() {
+  wmsVisibleLimit = 250;
 }
 
 function getSelectedWmsPartCode(area, value) {
@@ -4742,7 +5171,7 @@ function isWmsLocationGroupMatch(group) {
   return true;
 }
 
-function countDuplicateWmsItems(groups) {
+function getDuplicateWmsCodes(groups) {
   const countByCode = groups.reduce((acc, group) => {
     group.items.forEach((item) => {
       const code = normalizeCode(item.code);
@@ -4751,7 +5180,11 @@ function countDuplicateWmsItems(groups) {
     });
     return acc;
   }, new Map());
-  return [...countByCode.values()].filter((count) => count > 1).length;
+  return new Set([...countByCode.entries()].filter(([, count]) => count > 1).map(([code]) => code));
+}
+
+function countDuplicateWmsItems(groups) {
+  return getDuplicateWmsCodes(groups).size;
 }
 
 function getFilteredWmsGroups(area = getWmsCurrentArea()) {
@@ -4763,11 +5196,33 @@ function getFilteredWmsGroups(area = getWmsCurrentArea()) {
     compact: normalizeSearchCompact(raw),
     tokens: normalizeSearchText(raw).split(/[^a-z0-9]+/).filter((token) => token.length > 1),
   };
-  const groups = getWmsLocationGroups(area)
-    .filter(isWmsLocationGroupMatch)
-    .sort((a, b) => String(a.location).localeCompare(String(b.location), "pt-BR", { numeric: true }));
+  const allGroups = getWmsLocationGroups(area);
+  const duplicateCodes = getDuplicateWmsCodes(allGroups);
+  const groups = allGroups
+    .filter((group) => {
+      if (wmsQuickFilter === "empty" && group.items.length > 0) return false;
+      if (wmsQuickFilter === "duplicates" && !group.items.some((item) => duplicateCodes.has(normalizeCode(item.code)))) return false;
+      return isWmsLocationGroupMatch(group);
+    })
+    .sort((a, b) => compareWmsGroups(a, b, duplicateCodes));
   wmsActivePieceSearch = null;
   return groups;
+}
+
+function getWmsGroupSortCode(group, duplicateCodes = new Set()) {
+  const codes = (group.items || [])
+    .map((item) => normalizeCode(item.code))
+    .filter((code) => code && (!duplicateCodes.size || duplicateCodes.has(code)))
+    .sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true }));
+  return codes[0] || "";
+}
+
+function compareWmsGroups(a, b, duplicateCodes = new Set()) {
+  if (wmsQuickFilter === "duplicates") {
+    const codeCompare = getWmsGroupSortCode(a, duplicateCodes).localeCompare(getWmsGroupSortCode(b, duplicateCodes), "pt-BR", { numeric: true });
+    if (codeCompare !== 0) return codeCompare;
+  }
+  return String(a.location).localeCompare(String(b.location), "pt-BR", { numeric: true });
 }
 
 function makeWmsExportRows(area, groups) {
@@ -4857,18 +5312,25 @@ function renderWms() {
   if (currentUser?.role === "almox" && !wmsAreaFilter.value) wmsAreaFilter.value = "bp";
   const area = wmsAreaFilter.value === "cd" ? "cd" : "bp";
   const canEdit = canEditWmsArea(area);
+  const allGroups = getWmsLocationGroups(area);
+  const allEmptyLocationCount = allGroups.filter((group) => group.items.length === 0).length;
+  const allDuplicateItemCount = countDuplicateWmsItems(allGroups);
   const groups = getFilteredWmsGroups(area);
-  const visibleGroups = groups.slice(0, 250);
+  const visibleGroups = groups.slice(0, wmsVisibleLimit);
   const itemCount = groups.reduce((total, group) => total + group.items.length, 0);
-  const emptyLocationCount = groups.filter((group) => group.items.length === 0).length;
-  const duplicateItemCount = countDuplicateWmsItems(groups);
+  const shelfLabel = wmsShelfFilter?.closest("label")?.querySelector("span");
+  if (shelfLabel) shelfLabel.textContent = area === "cd" ? "Localização / depósito" : "Localização";
+  if (wmsShelfFilter) wmsShelfFilter.placeholder = area === "cd" ? "Localização, prédio, andar, apto ou depósito" : "Digite a localização";
 
   if (wmsEditorForm) {
-    wmsEditorForm.hidden = !canEdit;
     wmsEditorForm.querySelectorAll("input, button").forEach((field) => {
       field.disabled = !canEdit;
     });
     wmsEditorForm.querySelector(".wms-stock-field")?.toggleAttribute("hidden", area !== "cd");
+  }
+  if (wmsOpenEditorButton) {
+    wmsOpenEditorButton.hidden = !canEdit;
+    wmsOpenEditorButton.disabled = !canEdit;
   }
   if (wmsPermissionMessage) {
     wmsPermissionMessage.textContent = canEdit
@@ -4877,30 +5339,41 @@ function renderWms() {
   }
   if (wmsSummary) {
     const limitedText = groups.length > visibleGroups.length ? ` Mostrando as primeiras ${visibleGroups.length}.` : "";
+    const filteredText = wmsQuickFilter ? `<button class="wms-summary-clear" type="button" data-wms-quick-filter="${escapeAttr(wmsQuickFilter)}">Limpar filtro</button>` : "";
     wmsSummary.innerHTML = `
       <span><strong>${groups.length}</strong> localizações encontradas</span>
       <span><strong>${itemCount}</strong> itens alocados</span>
-      <span><strong>${emptyLocationCount}</strong> localizações vazias</span>
-      <span><strong>${duplicateItemCount}</strong> itens duplicados</span>
+      <button class="${wmsQuickFilter === "empty" ? "active" : ""}" type="button" data-wms-quick-filter="empty"><strong>${allEmptyLocationCount}</strong> localizações vazias</button>
+      <button class="${wmsQuickFilter === "duplicates" ? "active" : ""}" type="button" data-wms-quick-filter="duplicates"><strong>${allDuplicateItemCount}</strong> itens duplicados</button>
       <span>${escapeHtml(getWmsAreaLabel(area))}.${limitedText}</span>
+      ${filteredText}
     `;
   }
 
+  const moreCount = Math.max(0, groups.length - visibleGroups.length);
   wmsList.innerHTML = visibleGroups.length
-    ? visibleGroups.map((group) => renderWmsLocationGroup(area, group, canEdit)).join("")
+    ? `${visibleGroups.map((group) => renderWmsLocationGroup(area, group, canEdit)).join("")}${moreCount ? renderWmsLoadMore(moreCount) : ""}`
     : `<div class="empty-state compact">${escapeHtml(getWmsEmptyMessage(area))}</div>`;
+}
+
+function renderWmsLoadMore(moreCount) {
+  return `
+    <div class="wms-load-more">
+      <button class="secondary-action compact" type="button" data-wms-action="load-more">Ver mais ${Math.min(250, moreCount)} de ${moreCount}</button>
+    </div>
+  `;
 }
 
 function renderWmsLocationGroup(area, group, canEdit) {
   const shelf = [group.street, group.building, group.floor, group.slot].filter(Boolean).join(".");
   const details = area === "cd"
     ? [group.stockType, shelf ? `Prat. ${shelf}` : ""]
-    : [shelf ? `Prat. ${shelf}` : ""];
+    : [];
   return `
     <article class="wms-row">
       <div class="wms-row-main">
         <strong>${escapeHtml(group.location)}</strong>
-        <span>${escapeHtml(details.filter(Boolean).join(" | ") || "Sem detalhe")}</span>
+        ${details.length ? `<span>${escapeHtml(details.filter(Boolean).join(" | "))}</span>` : ""}
       </div>
       <div class="wms-location-list">
         ${group.items.length ? group.items.map((item) => renderWmsLocationItem(area, group.location, item, canEdit)).join("") : `<span class="wms-empty-location">Sem item alocado</span>`}
@@ -4971,12 +5444,21 @@ function handleWmsAllocationSubmit(event) {
   setEffectiveWmsLocations(area, code, [location, ...currentLocations]);
   saveWmsOverrides();
   wmsEditorForm.reset();
+  closeWmsPartSuggestions();
+  wmsEditorDialog?.close();
   if (wmsSearchFilter) wmsSearchFilter.value = "";
   if (wmsShelfFilter) wmsShelfFilter.value = location.location;
   renderWms();
 }
 
 function handleWmsListClick(event) {
+  const loadMoreButton = event.target.closest("[data-wms-action='load-more']");
+  if (loadMoreButton) {
+    wmsVisibleLimit += 250;
+    renderWms();
+    return;
+  }
+
   const button = event.target.closest("[data-wms-action]");
   if (!button) return;
   const area = button.dataset.area === "cd" ? "cd" : "bp";
@@ -6404,11 +6886,11 @@ function createHistoryTimeline(request) {
     },
     {
       label: "Retirada",
-      status: request.withdrawnAt ? "Retirado pelo PCM" : request.pickupAt ? "Retirada parcial registrada" : hasPickupPending(request) ? "Liberado para retirada" : "Aguardando",
+      status: request.withdrawnAt ? "Retirado pelo PCM" : hasPartialWithdrawal(request) ? "Retirada parcial registrada" : hasPickupPending(request) ? "Liberado para retirada" : "Aguardando",
       owner: request.withdrawnAt || request.pickupAt ? `${request.withdrawnPerson || request.requestedBy || "-"}${request.praxioRequisition ? ` | Praxio ${request.praxioRequisition}` : ""}` : "-",
       date: request.withdrawnAt || request.pickupAt,
       sla: request.withdrawnAt || request.pickupAt ? formatDuration(request.createdAt, request.withdrawnAt || request.pickupAt) : "-",
-      state: request.withdrawnAt ? "done" : !isCanceled && hasPickupPending(request) ? "active" : request.pickupAt ? "done" : "idle",
+      state: request.withdrawnAt ? "done" : !isCanceled && hasPickupPending(request) ? "active" : hasPartialWithdrawal(request) ? "done" : "idle",
     },
     {
       label: "Cancelamento",
@@ -7196,7 +7678,7 @@ function openPurchaseEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Compra");
   const pendingItems = request.items.filter((item) => getPurchasePendingQty(item) > 0);
   const bodyText = buildEmailBody("Relatório de Compra", `Segue registro de compra para a solicitação ${request.id}, ${getRequestTargetLabel(request).toLowerCase()}.`, [
-    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nEsboço SAP: ${request.sapDraftNumber || "-"}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nObservação de Compras: ${request.buyerNote || "-"}\nStatus: ${getRequestStatusText(request)}` },
+    { title: "Dados da Compra", content: `Solicitação: ${request.id}\nEsboço SAP: ${request.sapDraftNumber || "-"}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nPrevisão de entrega: ${request.deliveryDate ? formatDateOnly(request.deliveryDate) : "Pendente"}\nStatus: ${getRequestStatusText(request)}` },
     { title: "Itens", content: pendingItems.length ? formatEmailItems(pendingItems, (item) => getPurchasePendingQty(item), () => [
       `ESBOÇO SAP: ${request.sapDraftNumber || "-"}`,
       `SOLICITAÇÃO SAP: ${request.sapRequestNumber || "-"}`,
@@ -7210,10 +7692,10 @@ function openPurchaseEmailDraft(request, to) {
 
 function openPurchaseArrivalEmailDraft(request, to) {
   const subject = buildEmailSubject(request, "Chegada de compra");
-  const arrivedItems = request.items.filter((item) => item.purchaseApproval === "approved" && (getPurchasePendingQty(item) > 0 || Number(item.purchaseReceivedQty) > 0));
+  const arrivedItems = request.items.filter((item) => getPurchaseArrivedQtyForReceipt(request, item) > 0);
   const bodyText = buildEmailBody("Chegada de Item Comprado", `O Almoxarifado informou a chegada de item comprado da solicitação ${request.id}.`, [
     { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nData de chegada: ${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : formatDateOrDash(request.purchaseArrivedAt)}\nInformado por: ${request.purchaseArrivedBy || "Almoxarifado"}\nStatus: Pendente entrada e recebimento no SAP` },
-    { title: "Itens", content: arrivedItems.length ? formatEmailItems(arrivedItems, (item) => getPurchasePendingQty(item) || item.purchaseReceivedQty || item.purchaseQty, () => [
+    { title: "Itens", content: arrivedItems.length ? formatEmailItems(arrivedItems, (item) => getPurchaseArrivedQtyForReceipt(request, item), () => [
       `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
       "STATUS: Pendente entrada e recebimento no SAP",
     ]) : "Nenhum item comprado pendente de recebimento." },
@@ -7289,16 +7771,16 @@ function createProcessMap(request) {
     { key: "aprovacao", label: "Aprovação", date: request.purchaseApprovedAt, done: Boolean(request.purchaseApprovedAt) || request.status === "reprovado", active: !isCanceled && hasPurchaseApprovalPending(request), requested: Boolean(request.purchaseApprovalRequestedAt || request.purchaseApprovedAt) || hasPurchaseApprovalPending(request) },
     { key: "compra", label: "Compra", date: request.purchaseAt || request.sapDraftAt || request.sapRequestAt, done: Boolean(hasPurchaseReceipt(request)), active: !isCanceled && (displayStatus === "compra" || (displayStatus === "recebimento" && isPurchaseArrivalRegistered(request))), requested: Boolean(request.purchaseAt || request.purchaseOrder || request.sapDraftNumber || request.sapRequestNumber) || hasApprovedPurchasePending(request) },
     { key: "recebimento", label: "Recebimento", date: request.receiptAt, done: Boolean(request.receiptAt), active: !isCanceled && displayStatus === "recebimento", requested: Boolean(request.receiptAt) || displayStatus === "recebimento" },
-    { key: "retirado", label: "Retirada", date: request.withdrawnAt, done: request.status === "retirado", active: !isCanceled && hasPickupPending(request), requested: Boolean(request.withdrawnAt) || hasPickupPending(request) },
+    { key: "retirado", label: hasPartialWithdrawal(request) && request.status !== "retirado" ? "Retirada parcial" : "Retirada", date: request.withdrawnAt || request.partialPickupAt || request.pickupAt, done: request.status === "retirado" || hasPartialWithdrawal(request), active: !isCanceled && hasPickupPending(request), requested: Boolean(request.withdrawnAt || request.partialPickupAt || request.pickupAt) || hasPickupPending(request) },
     { key: "cancelamento", label: "Cancelamento", date: request.cancellationApprovedAt || request.cancellationRejectedAt || request.cancellationRequestedAt, done: request.status === "cancelado" || Boolean(request.cancellationRejectedAt), active: !isCanceled && displayStatus === "cancelamento", requested: Boolean(request.cancellationRequestedAt) || request.status === "cancelamento" || request.status === "cancelado" },
   ];
   return steps
+    .filter((step) => step.requested)
     .map((step) => {
       const active = step.active;
-      const notRequested = !step.requested;
-      const done = step.done && !notRequested;
+      const done = step.done;
       const meta = step.date ? `${formatDate(step.date)} | ${formatDuration(request.createdAt, step.date)}` : step.requested ? "Aguardando" : "Não solicitado";
-      return `<div class="process-step ${active ? "active" : ""} ${done ? "done" : ""} ${notRequested ? "not-requested" : ""}"><strong>${step.label}</strong><span>${meta}</span></div>`;
+      return `<div class="process-step ${active ? "active" : ""} ${done ? "done" : ""}"><strong>${step.label}</strong><span>${meta}</span></div>`;
     })
     .join("");
 }
