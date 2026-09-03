@@ -898,7 +898,7 @@ function getUserNotifications() {
 }
 
 function getNotificationItemCount(request, filter) {
-  if (filter === "atendimento") return request.items.filter(isPickupItemPending).length;
+  if (filter === "atendimento" || filter === "retirada") return request.items.filter(isPickupItemPending).length;
   if (filter === "recebimento") return getReceiptPendingItems(request).length;
   if (filter === "espera") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
@@ -3049,8 +3049,9 @@ function clearAutofilledQueueFilters() {
 
 function createCard(request) {
   const card = requestTemplate.content.firstElementChild.cloneNode(true);
-  const pickupMode = currentUser.role === "almox" && currentFilter === "atendimento" && hasPickupPending(request);
-  const pickupOnlyView = currentFilter === "atendimento" && (currentUser.role === "almox" || currentUser.role === "pcm") && hasPickupPending(request);
+  const pickupFilterActive = currentFilter === "atendimento" || currentFilter === "retirada";
+  const pickupMode = currentUser.role === "almox" && pickupFilterActive && hasPickupPending(request);
+  const pickupOnlyView = pickupFilterActive && (currentUser.role === "almox" || currentUser.role === "pcm" || currentUser.role === "admin" || currentUser.role === "manager") && hasPickupPending(request);
   const receiptOnlyView = currentFilter === "recebimento" && getDisplayStatus(request) === "recebimento";
   const purchaseOnlyView = currentFilter === "compra" && currentUser.role === "almox";
   const displayItems = getDisplayItemsForCurrentView(request);
@@ -3421,7 +3422,7 @@ function createCard(request) {
 }
 
 function createRequestCardTitle(request, items) {
-  const count = items.length || request.items?.length || 0;
+  const count = Array.isArray(items) ? items.length : request.items?.length || 0;
   return `${formatItemCount(count)} nesta solicitação`;
 }
 
@@ -3930,12 +3931,15 @@ async function registerPurchaseArrival(id, card) {
   const now = new Date().toISOString();
   const selectedSet = new Set(selectedArrivalIndexes);
   let arrivedItemCount = 0;
+  const arrivalEmailQtyByIndex = {};
   const items = request.items.map((item, index) => {
     if (!selectedSet.has(index) || getPurchaseWaitingArrivalQty(request, item) <= 0) return item;
+    const arrivedQty = getPurchasePendingQty(item);
     arrivedItemCount += 1;
+    arrivalEmailQtyByIndex[index] = arrivedQty;
     return {
       ...item,
-      purchaseArrivedQty: getPurchasePendingQty(item),
+      purchaseArrivedQty: arrivedQty,
       purchaseArrivedDate: arrivedDate,
       purchaseArrivedAt: now,
       purchaseArrivedBy: currentUser.name || currentUser.label,
@@ -3957,7 +3961,7 @@ async function registerPurchaseArrival(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
-  openPurchaseArrivalEmailDraft(updatedRequest, "");
+  openPurchaseArrivalEmailDraft(updatedRequest, "", arrivalEmailQtyByIndex);
   await saveRequestsSafely("chegada de compra");
   render();
 }
@@ -4002,11 +4006,12 @@ async function confirmReceiptEntry(id, card) {
   const receiptInvoiceDataUrl = selectedReceiptInvoice ? await readFileAsDataUrl(selectedReceiptInvoice) : request.receiptInvoiceDataUrl || "";
   const now = new Date().toISOString();
   const selectedReceiptIndexSet = new Set(selectedReceiptIndexes);
-  const items = request.items.map((item) => {
-    const index = request.items.indexOf(item);
+  const receiptEmailQtyByIndex = {};
+  const items = request.items.map((item, index) => {
     if (!selectedReceiptIndexSet.has(index) || !isReceiptItemPending(request, item)) return item;
     const purchasedQty = getPurchaseArrivedQtyForReceipt(request, item);
     const cdQty = Number(item.cdQty) || 0;
+    receiptEmailQtyByIndex[index] = purchasedQty + cdQty;
     const remainingPurchaseQty = Math.max(0, getPurchasePendingQty(item) - purchasedQty);
     return {
       ...item,
@@ -4052,7 +4057,7 @@ async function confirmReceiptEntry(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
-  openReceiptEmailDraft(updatedRequest, "");
+  openReceiptEmailDraft(updatedRequest, "", receiptEmailQtyByIndex);
   await saveRequestsSafely("recebimento");
   render();
 }
@@ -4243,7 +4248,7 @@ function getDisplayItemsForCurrentView(request) {
   if (currentFilter === "cd" || (currentUser?.role === "cd" && currentFilter !== "recebimento")) {
     return request.items.filter((item) => getCdPendingQty(item) > 0);
   }
-  if (currentFilter === "atendimento" && (currentUser?.role === "pcm" || currentUser?.role === "almox")) {
+  if ((currentFilter === "atendimento" || currentFilter === "retirada") && (currentUser?.role === "pcm" || currentUser?.role === "almox" || currentUser?.role === "admin" || currentUser?.role === "manager")) {
     const pickupItems = request.items.filter(isPickupItemPending);
     return pickupItems;
   }
@@ -7690,12 +7695,16 @@ function openPurchaseEmailDraft(request, to) {
   openMailDraft({ step: "purchase", fallback: to || `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail(request.requestedByEmail || request.requestedBy)}` }, subject, bodyText);
 }
 
-function openPurchaseArrivalEmailDraft(request, to) {
+function openPurchaseArrivalEmailDraft(request, to, arrivalQtyByIndex = null) {
   const subject = buildEmailSubject(request, "Chegada de compra");
-  const arrivedItems = request.items.filter((item) => getPurchaseArrivedQtyForReceipt(request, item) > 0);
+  const arrivalIndexes = arrivalQtyByIndex ? new Set(Object.keys(arrivalQtyByIndex).map(Number)) : null;
+  const arrivedItems = request.items.filter((item, index) => arrivalIndexes ? arrivalIndexes.has(index) : getPurchaseArrivedQtyForReceipt(request, item) > 0);
   const bodyText = buildEmailBody("Chegada de Item Comprado", `O Almoxarifado informou a chegada de item comprado da solicitação ${request.id}.`, [
     { title: "Dados da Compra", content: `Solicitação: ${request.id}\nSolicitação SAP: ${request.sapRequestNumber || "-"}\nPedido de compra: ${request.purchaseOrder || "-"}\nData de chegada: ${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : formatDateOrDash(request.purchaseArrivedAt)}\nInformado por: ${request.purchaseArrivedBy || "Almoxarifado"}\nStatus: Pendente entrada e recebimento no SAP` },
-    { title: "Itens", content: arrivedItems.length ? formatEmailItems(arrivedItems, (item) => getPurchaseArrivedQtyForReceipt(request, item), () => [
+    { title: "Itens", content: arrivedItems.length ? formatEmailItems(arrivedItems, (item) => {
+      const index = request.items.indexOf(item);
+      return arrivalQtyByIndex ? arrivalQtyByIndex[index] : getPurchaseArrivedQtyForReceipt(request, item);
+    }, () => [
       `PEDIDO DE COMPRA: ${request.purchaseOrder || "-"}`,
       "STATUS: Pendente entrada e recebimento no SAP",
     ]) : "Nenhum item comprado pendente de recebimento." },
@@ -7704,12 +7713,16 @@ function openPurchaseArrivalEmailDraft(request, to) {
   openMailDraft({ step: "receipt", fallback: to || `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("rodrigo.araujo")}` }, subject, bodyText);
 }
 
-function openReceiptEmailDraft(request, to) {
+function openReceiptEmailDraft(request, to, receiptQtyByIndex = null) {
   const subject = buildEmailSubject(request, "Disponível para retirada");
-  const receiptItems = request.items.filter((item) => Number(item.availableQty) > 0 && (Number(item.cdReceivedQty) > 0 || Number(item.purchaseReceivedQty) > 0));
+  const receiptIndexes = receiptQtyByIndex ? new Set(Object.keys(receiptQtyByIndex).map(Number)) : null;
+  const receiptItems = request.items.filter((item, index) => receiptIndexes ? receiptIndexes.has(index) : Number(item.availableQty) > 0 && (Number(item.cdReceivedQty) > 0 || Number(item.purchaseReceivedQty) > 0));
   const bodyText = buildEmailBody("Peça Disponível para Retirada", `O Almoxarifado confirmou entrada SAP/recebimento da solicitação ${request.id}. Os itens abaixo estão disponíveis para retirada do PCM.`, [
     { title: "Dados do Recebimento", content: `Solicitação: ${request.id}\nEntrada SAP: ${request.receiptNumber || "-"}\nData de chegada/recebimento: ${request.purchaseArrivedDate ? formatDateOnly(request.purchaseArrivedDate) : "-"}\nRecebido por: ${request.receiptBy || "Almoxarifado"}\nNF fornecedor: ${request.receiptInvoiceName || "-"}\nNF transferência CD: ${request.transferInvoiceName || "-"}` },
-    { title: "Itens disponíveis", content: receiptItems.length ? formatEmailItems(receiptItems, (item) => Number(item.availableQty) || 0, (item) => [
+    { title: "Itens disponíveis", content: receiptItems.length ? formatEmailItems(receiptItems, (item) => {
+      const index = request.items.indexOf(item);
+      return receiptQtyByIndex ? receiptQtyByIndex[index] : Number(item.availableQty) || 0;
+    }, (item) => [
       `ATENDIDO ALMOX: ${getAlmoxServedQty(item)} UNIDADES`,
       `RECEBIDO CD: ${item.cdReceivedQty || 0} UNIDADES`,
       `RECEBIDO COMPRA: ${item.purchaseReceivedQty || 0} UNIDADES`,
