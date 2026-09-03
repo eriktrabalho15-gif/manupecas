@@ -667,11 +667,15 @@ async function startApp() {
     saveCustomParts();
     savePartRegistrations();
   }
+  if (repairMissingPartRegistrationBacklog()) {
+    await saveRequestsSafely("cadastros de item pendentes");
+    savePartRegistrations();
+  }
   if (applyCompletedPartRegistrationsToRequests()) {
     await saveRequestsSafely("cadastros SAP concluídos");
   }
-  if (repairMissingPartRegistrationBacklog()) {
-    await saveRequestsSafely("cadastros de item pendentes");
+  if (repairCompletedRegistrationsWithoutRequest()) {
+    await saveRequestsSafely("cadastros concluídos sem solicitação");
     savePartRegistrations();
   }
   if (repairRejectedCancellationsStuckInReview()) {
@@ -1156,6 +1160,7 @@ function normalizeRequest(request) {
 }
 
 function normalizeStatus(status, items = []) {
+  if (status === "cadastro" && !items.some(isPendingRegistrationItem)) return calculateStatus(items);
   if (status === "solicitacao" || status === "cadastro" || status === "cd" || status === "atendimento" || status === "aprovacao" || status === "compra" || status === "recebimento" || status === "cancelamento" || status === "cancelado" || status === "reprovado" || status === "retirado") return status;
   if (status === "pendente") return "solicitacao";
   if (status === "estoque" || status === "atendida") return "atendimento";
@@ -1495,8 +1500,16 @@ async function syncFromSupabase() {
       partRegistrations = remotePartRegistrations;
       savePartRegistrationsLocalCache();
     }
+    if (repairMissingPartRegistrationBacklog()) {
+      await saveRequestsSafely("cadastros de item pendentes");
+      savePartRegistrations();
+    }
     if (applyCompletedPartRegistrationsToRequests()) {
       await saveRequestsSafely("cadastros SAP concluídos");
+    }
+    if (repairCompletedRegistrationsWithoutRequest()) {
+      await saveRequestsSafely("cadastros concluídos sem solicitação");
+      savePartRegistrations();
     }
     if (remoteEmailSettings) {
       emailSettings = normalizeEmailSettings(remoteEmailSettings);
@@ -2729,6 +2742,13 @@ function resolvePart(input) {
   }
 
   if (input.dataset.registrationId && input.dataset.description) {
+    const registration = partRegistrations.find((item) => item.id === input.dataset.registrationId);
+    if (registration?.status === "done" && registration.createdCode && registration.createdDescription) {
+      return {
+        code: String(registration.createdCode || "").trim(),
+        description: String(registration.createdDescription || registration.description || input.dataset.description || "").trim(),
+      };
+    }
     return {
       code: "CADASTRO PENDENTE",
       description: input.dataset.description,
@@ -5407,8 +5427,6 @@ async function createPartRegistration(data) {
     return;
   }
 
-  prepareMailPopup();
-
   const photos = await Promise.all(photoFiles.map(async (file) => ({
     name: file.name,
     dataUrl: await readFileAsDataUrl(file),
@@ -5421,8 +5439,7 @@ async function createPartRegistration(data) {
   if (alreadyPending) {
     const pending = partRegistrations.find((item) => item.status === "pending" && item.description.toLowerCase() === description.toLowerCase() && item.originalCode.toLowerCase() === originalCode.toLowerCase());
     linkPendingRegistrationToInput(pending, getPartRegistrationTargetInput());
-    closePreparedMailPopup();
-    partRegistrationMessage.textContent = "Este cadastro já está pendente para o admin e foi vinculado à solicitação.";
+    partRegistrationMessage.textContent = "Cadastro vinculado ao pedido. Clique em Registrar solicitação para gerar o número BP e enviar o e-mail.";
     partRegistrationMessage.className = "password-message success";
     setTimeout(() => partRegistrationDialog.close(), 450);
     return;
@@ -5451,8 +5468,7 @@ async function createPartRegistration(data) {
   savePartRegistrations();
   renderPartRegistrations();
   linkPendingRegistrationToInput(registration, getPartRegistrationTargetInput());
-  openStandalonePartRegistrationEmailDraft(registration);
-  partRegistrationMessage.textContent = "Cadastro enviado para Erik e Bruno.";
+  partRegistrationMessage.textContent = "Cadastro vinculado ao pedido. Clique em Registrar solicitação para gerar o número BP e enviar o e-mail.";
   partRegistrationMessage.className = "password-message success";
   setTimeout(() => partRegistrationDialog.close(), 450);
 }
@@ -5554,9 +5570,12 @@ function ensurePendingRegistrationsForRequest(request) {
     };
   });
 
-  if (requestChanged && request.status !== "cadastro") {
-    request.status = "cadastro";
-    request.response = request.response || "Solicitação aguardando cadastro de item.";
+  if (requestChanged) {
+    if (request.status !== "cadastro") {
+      request.status = "cadastro";
+      request.response = request.response || "Solicitação aguardando cadastro de item.";
+    }
+    request.updatedAt = new Date().toISOString();
   }
 
   return pendingIds.filter(Boolean);
@@ -5571,7 +5590,6 @@ function findPartRegistrationForPendingItem(request, item) {
   const itemDescription = normalizeSearchText(item.description || "");
   const itemOriginalCode = normalizeSearchText(item.pendingOriginalCode || "");
   return partRegistrations.find((registration) => {
-    if (registration.status === "done") return false;
     if (registration.linkedRequestId && registration.linkedRequestId === request.id && getRegistrationDescription(registration) === itemDescription) return true;
     if (getRegistrationDescription(registration) !== itemDescription) return false;
     const registrationOriginalCode = getRegistrationOriginalCode(registration);
@@ -5607,6 +5625,12 @@ function createPartRegistrationFromPendingItem(request, item, index = 0) {
 function repairMissingPartRegistrationBacklog() {
   let changed = false;
   requests.forEach((request) => {
+    const beforeItems = JSON.stringify((request.items || []).map((item) => ({
+      code: item.code,
+      description: item.description,
+      pendingRegistrationId: item.pendingRegistrationId,
+      isPendingRegistration: item.isPendingRegistration,
+    })));
     const beforeIds = new Set(partRegistrations.map((registration) => registration.id));
     const pendingIds = ensurePendingRegistrationsForRequest(request);
     if (pendingIds.length) {
@@ -5616,13 +5640,72 @@ function repairMissingPartRegistrationBacklog() {
           : registration
       );
     }
-    if (partRegistrations.some((registration) => !beforeIds.has(registration.id))) changed = true;
+    const afterItems = JSON.stringify((request.items || []).map((item) => ({
+      code: item.code,
+      description: item.description,
+      pendingRegistrationId: item.pendingRegistrationId,
+      isPendingRegistration: item.isPendingRegistration,
+    })));
+    if (beforeItems !== afterItems || partRegistrations.some((registration) => !beforeIds.has(registration.id))) changed = true;
   });
   if (changed) {
     persistRequestsLocally();
     savePartRegistrationsLocalCache();
   }
   return changed;
+}
+
+function repairCompletedRegistrationsWithoutRequest() {
+  const completedWithoutRequest = partRegistrations.filter((registration) => {
+    if (registration.status !== "done" || !registration.createdCode || !registration.createdDescription) return false;
+    if (registration.linkedRequestId && requests.some((request) => request.id === registration.linkedRequestId)) return false;
+    return !requests.some((request) => request.createdFromRegistrationId === registration.id || request.items?.some((item) => item.sourceRegistrationId === registration.id));
+  });
+
+  if (completedWithoutRequest.length === 0) return false;
+
+  const usedIds = new Set(requests.map((request) => request.id).filter(Boolean));
+  const now = new Date().toISOString();
+  const createdRequests = completedWithoutRequest.map((registration) => {
+    const id = makeNextRequestCode(usedIds);
+    usedIds.add(id);
+    return {
+      id,
+      bus: registration.linkedRequestBus || "-",
+      targetType: "prefixo",
+      maintainer: "-",
+      items: [{
+        code: String(registration.createdCode || "").trim(),
+        description: String(registration.createdDescription || registration.description || "").trim(),
+        quantity: 1,
+        availableQty: 0,
+        cdQty: 0,
+        purchaseQty: 0,
+        sourceRegistrationId: registration.id,
+      }],
+      priority: "Normal",
+      reason: "Solicitação gerada automaticamente a partir de cadastro de item sem BP vinculada.",
+      status: "solicitacao",
+      response: "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
+      createdAt: registration.createdAt || registration.completedAt || now,
+      requestedBy: registration.requestedBy || "PCM",
+      requestedByEmail: registration.requestedByEmail || "",
+      almoxBy: "",
+      almoxByEmail: "",
+      createdFromRegistrationId: registration.id,
+      updatedAt: now,
+    };
+  });
+
+  const requestIdByRegistration = new Map(createdRequests.map((request) => [request.createdFromRegistrationId, request.id]));
+  requests = [...createdRequests, ...requests].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  partRegistrations = partRegistrations.map((registration) => {
+    const requestId = requestIdByRegistration.get(registration.id);
+    return requestId ? { ...registration, linkedRequestId: requestId, linkedRequestBus: registration.linkedRequestBus || "-" } : registration;
+  });
+  persistRequestsLocally();
+  savePartRegistrationsLocalCache();
+  return true;
 }
 
 function renderPartRegistrations() {
@@ -5654,6 +5737,7 @@ function renderPartRegistrations() {
           <strong>${escapeHtml(item.description)}</strong>
           <span>Código/Fabricante: ${escapeHtml(item.originalCode)}</span>
           <small>Solicitado: ${formatDateOrDash(item.createdAt)}</small>
+          <small>${item.linkedRequestId ? `Solicitação: ${escapeHtml(item.linkedRequestId)}` : "Sem solicitação BP vinculada"}</small>
           ${photoLinks ? `<div class="part-photo-links">${photoLinks}</div>` : ""}
         </div>
         <label>
@@ -5744,6 +5828,7 @@ function applyCompletedPartRegistrationsToRequests() {
       response: hasPendingRegistration
         ? request.response || "Solicitação aguardando cadastro de item."
         : "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
+      updatedAt: new Date().toISOString(),
     };
   });
 
@@ -5795,6 +5880,7 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
       response: hasPendingRegistration
         ? request.response || "Solicitação aguardando cadastro de item."
         : "Cadastro SAP concluído. Solicitação liberada para atendimento do Almoxarifado.",
+      updatedAt: new Date().toISOString(),
     };
     updatedRequests.push(updatedRequest);
     return updatedRequest;
@@ -5818,7 +5904,16 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
   if (updatedRequests.length > 0) {
     openPartRegistrationCompletedEmailDraft(updatedRequests[0], part, useExisting);
   } else {
-    closePreparedMailPopup();
+    if (repairCompletedRegistrationsWithoutRequest()) {
+      const createdRequest = requests.find((request) => request.createdFromRegistrationId === id);
+      if (createdRequest) {
+        openPartRegistrationCompletedEmailDraft(createdRequest, part, useExisting);
+      } else {
+        closePreparedMailPopup();
+      }
+    } else {
+      closePreparedMailPopup();
+    }
   }
   await saveRequestsSafely("cadastro de item");
   saveCustomParts();
@@ -7002,7 +7097,7 @@ function openPartRegistrationEmailDraft(request) {
 
   const subject = buildEmailSubject(request, "Cadastro de item");
   const targetLabel = getRequestTargetLabel(request);
-  const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro de Item para liberar o Almoxarifado.`, [
+  const bodyText = buildEmailBody("Solicitação de Cadastro de Item", `Existem itens sem cadastro SAP na solicitação ${request.id}. Cadastre no SAP e informe código e descrição final na aba Cadastro para liberar o Almoxarifado.`, [
     { title: "Dados da Solicitação", content: `Solicitação: ${request.id}\nSolicitante: ${request.requestedBy}\nManutentor: ${request.maintainer || "-"}\nAplicação: ${targetLabel}\nPrioridade: ${request.priority}\nData: ${formatDate(request.createdAt)}` },
     { title: "Itens para Cadastro", content: formatEmailItems(pendingItems, (item) => item.quantity, (item) => [
       `CÓDIGO ORIGINAL: ${item.pendingOriginalCode || "-"}`,
