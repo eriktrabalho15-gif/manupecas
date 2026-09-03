@@ -70,6 +70,7 @@ const statusText = {
 const pickupBlockReasons = [
   "Sem saldo Praxio",
   "Sem Saldo SAP",
+  "Aguardando demais itens",
   "Aguardando NF",
   "Não Cadastrado (Praxio)",
   "Veículo Inativo",
@@ -1670,15 +1671,26 @@ async function loadStructuredItems() {
 }
 
 async function loadStructuredRequests() {
-  const [{ data: requestRows, error: requestError }, { data: itemRows, error: itemError }] = await Promise.all([
+  const itemSelectBase = "solicitacao_id, codigo_sap, descricao, quantidade_solicitada, quantidade_almox, quantidade_cd, quantidade_compra, quantidade_retirada, status_item, nf_transferencia, entrada_sap, criado_em";
+  const itemSelectWithArrival = `${itemSelectBase}, quantidade_compra_chegou, chegada_compra_em, data_chegada_compra, responsavel_chegada_compra`;
+  const [{ data: requestRows, error: requestError }, itemResult] = await Promise.all([
     supabaseClient
       .from("solicitacoes")
       .select("id, numero, prefixo, tipo_solicitacao, prioridade, motivo, solicitante, manutentor, status_atual, criado_em")
       .order("criado_em", { ascending: false }),
     supabaseClient
       .from("solicitacao_itens")
-      .select("solicitacao_id, codigo_sap, descricao, quantidade_solicitada, quantidade_almox, quantidade_cd, quantidade_compra, quantidade_retirada, status_item, nf_transferencia, entrada_sap, criado_em"),
+      .select(itemSelectWithArrival),
   ]);
+  let { data: itemRows, error: itemError } = itemResult;
+  const arrivalColumnNames = ["quantidade_compra_chegou", "chegada_compra_em", "data_chegada_compra", "responsavel_chegada_compra"];
+  if (itemError && arrivalColumnNames.some((column) => String(itemError.message || "").includes(column))) {
+    const fallbackResult = await supabaseClient
+      .from("solicitacao_itens")
+      .select(itemSelectBase);
+    itemRows = fallbackResult.data;
+    itemError = fallbackResult.error;
+  }
 
   if (requestError || itemError) {
     console.warn("Erro ao carregar solicitações estruturadas:", requestError?.message || itemError?.message);
@@ -1689,6 +1701,12 @@ async function loadStructuredRequests() {
     const key = item.solicitacao_id;
     if (!key) return acc;
     if (!acc[key]) acc[key] = [];
+    const statusItem = item.status_item || "";
+    const purchaseQty = Number(item.quantidade_compra) || 0;
+    const storedArrivedQty = Number(item.quantidade_compra_chegou) || 0;
+    const receiptPendingByStatus = /pendente entrada e recebimento/i.test(statusItem);
+    const purchaseFlowByStatus = /(compra|sap|aprova|recebimento)/i.test(statusItem);
+    const purchaseArrivedQty = storedArrivedQty || (receiptPendingByStatus ? purchaseQty : 0);
     acc[key].push({
       code: item.codigo_sap || "",
       description: item.descricao || "Peça sem descrição",
@@ -1696,7 +1714,14 @@ async function loadStructuredRequests() {
       almoxQty: Number(item.quantidade_almox) || 0,
       availableQty: Number(item.quantidade_almox) || 0,
       cdQty: Number(item.quantidade_cd) || 0,
-      purchaseQty: Number(item.quantidade_compra) || 0,
+      purchaseQty,
+      purchaseApproval: purchaseQty > 0 || purchaseFlowByStatus ? "approved" : "",
+      status: receiptPendingByStatus ? "recebimento" : "",
+      statusItem: statusItem,
+      purchaseArrivedQty,
+      purchaseArrivedAt: item.chegada_compra_em || "",
+      purchaseArrivedDate: item.data_chegada_compra || "",
+      purchaseArrivedBy: item.responsavel_chegada_compra || "",
       withdrawnQty: Number(item.quantidade_retirada) || 0,
     });
     return acc;
@@ -1994,6 +2019,7 @@ function getRequestProgressScore(request) {
     + (Number(item.cdPendingQty) || 0) * 2
     + (Number(item.cdQty) || 0) * 3
     + (Number(item.purchaseQty) || 0) * 3
+    + (Number(item.purchaseArrivedQty) || 0) * 4
     + (Number(item.purchaseReceivedQty) || 0) * 4
     + (Number(item.cdReceivedQty) || 0) * 4
     + (Number(item.withdrawnQty) || 0) * 5
@@ -2224,10 +2250,14 @@ async function mirrorRequestsToStructuredTables(rows) {
         quantidade_almox: Number(item.availableQty) || 0,
         quantidade_cd: Number(item.cdQty) || 0,
         quantidade_compra: getPurchasePendingQty(item),
+        quantidade_compra_chegou: Number(item.purchaseArrivedQty) || 0,
         quantidade_retirada: Number(item.withdrawnQty) || 0,
         status_item: getItemPurchaseStatus(request, item),
         nf_transferencia: getItemInvoiceName(request, item, "transfer"),
         entrada_sap: getItemReceiptMarkup(request, item),
+        chegada_compra_em: toNullableIso(item.purchaseArrivedAt),
+        data_chegada_compra: toNullableDate(item.purchaseArrivedDate),
+        responsavel_chegada_compra: item.purchaseArrivedBy || "",
         criado_em: request.createdAt || new Date().toISOString(),
       }));
     });
@@ -2235,8 +2265,27 @@ async function mirrorRequestsToStructuredTables(rows) {
     if (itemPayload.length > 0) {
       const { error: itemError } = await supabaseClient.from("solicitacao_itens").insert(itemPayload);
       if (itemError) {
-        warnOptionalSupabaseMirror("Erro ao salvar itens estruturados", itemError);
-        return;
+        const missingArrivalColumns = ["quantidade_compra_chegou", "chegada_compra_em", "data_chegada_compra", "responsavel_chegada_compra"]
+          .some((column) => String(itemError.message || "").includes(column));
+        if (!missingArrivalColumns) {
+          warnOptionalSupabaseMirror("Erro ao salvar itens estruturados", itemError);
+          return;
+        }
+        const fallbackPayload = itemPayload.map((item) => {
+          const {
+            quantidade_compra_chegou,
+            chegada_compra_em,
+            data_chegada_compra,
+            responsavel_chegada_compra,
+            ...baseItem
+          } = item;
+          return baseItem;
+        });
+        const { error: fallbackItemError } = await supabaseClient.from("solicitacao_itens").insert(fallbackPayload);
+        if (fallbackItemError) {
+          warnOptionalSupabaseMirror("Erro ao salvar itens estruturados", fallbackItemError);
+          return;
+        }
       }
     }
 
@@ -2302,6 +2351,27 @@ function persistRequestsLocally() {
 async function saveRequestsSafely(context = "solicitações") {
   try {
     await saveRequests();
+    return true;
+  } catch (error) {
+    persistRequestsLocally();
+    setSupabaseStatus("error", "Supabase: erro ao salvar");
+    console.warn(`Falha ao salvar ${context}. O app continuará com os dados locais.`, error);
+    return false;
+  }
+}
+
+async function saveRequestSnapshotSafely(request, context = "solicitação") {
+  try {
+    if (!supabaseClient) {
+      persistRequestsLocally();
+      return true;
+    }
+    const normalizedRequest = normalizeRequest(request);
+    requests = requests.map((item) => (item.id === normalizedRequest.id ? normalizedRequest : item));
+    persistRequestsLocally();
+    const result = await upsertSupabaseRows("manupecas_requests", "id", [normalizedRequest]);
+    if (result?.error) throw result.error;
+    syncStructuredTablesSafely(context);
     return true;
   } catch (error) {
     persistRequestsLocally();
@@ -2915,12 +2985,12 @@ function render() {
       return request.status === currentFilter;
     }
     if (currentUser.role === "cd") {
-      if (currentFilter === "recebimento") return getDisplayStatus(request) === "recebimento";
+      if (currentFilter === "recebimento") return getReceiptPendingItems(request).length > 0;
       if (currentFilter === "cd") return request.status === "cd";
       return false;
     }
     if (currentUser.role === "almox" && currentFilter === "recebimento") {
-      return getDisplayStatus(request) === "recebimento";
+      return getReceiptPendingItems(request).length > 0;
     }
     if (currentUser.role === "almox" && currentFilter === "atendimento") {
       return request.status === "atendimento" || hasPickupPending(request);
@@ -2935,6 +3005,7 @@ function render() {
     if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
     if (currentFilter === "compra") return isSapRequestPending(request);
     if (currentFilter === "espera") return isWaitingArrivalPending(request);
+    if (currentFilter === "recebimento") return getReceiptPendingItems(request).length > 0;
     return request.status === currentFilter;
   }).filter(matchesQueueFilters);
 
@@ -3088,7 +3159,14 @@ function createCard(request) {
   const receiptPasswordInput = card.querySelector(".receipt-password");
   const receiptMessage = card.querySelector(".receipt-message");
 
-  const displayStatus = pickupOnlyView ? "atendimento" : (currentFilter === "compra" || currentFilter === "espera") && isPurchaseQueuePending(request) ? "compra" : getDisplayStatus(request);
+  const hasReceiptItemsInView = currentFilter === "recebimento" && getReceiptPendingItems(request).length > 0;
+  const displayStatus = hasReceiptItemsInView
+    ? "recebimento"
+    : pickupOnlyView
+    ? "atendimento"
+    : (currentFilter === "compra" || currentFilter === "espera") && isPurchaseQueuePending(request)
+    ? "compra"
+    : getDisplayStatus(request);
   const isReceiptFlow = currentFilter === "recebimento" && displayStatus === "recebimento";
   const isSapRequestView = isSapRequestPending(request) && currentFilter === "compra";
   const isWaitingArrivalView = isWaitingArrivalPending(request) && currentFilter === "espera";
@@ -3153,7 +3231,9 @@ function createCard(request) {
   displayItems.forEach((item) => {
     const index = request.items.indexOf(item);
     const li = document.createElement("li");
+    if (pickupMode) li.classList.add("pickup-selectable-item");
     li.innerHTML = `
+      ${pickupMode ? `<label class="pickup-item-check"><input class="pickup-item-toggle" type="checkbox" data-index="${index}" checked /> Retirar</label>` : ""}
       <strong>${item.code}</strong>
       <span>${item.description}</span>
       <small class="item-status">${getItemStageStatus(request, item)}</small>
@@ -3346,7 +3426,7 @@ function createCard(request) {
         Quem está retirando
         <input class="pickup-person" type="text" value="${escapeAttr(request.withdrawnPerson || "")}" placeholder="Nome e sobrenome" />
       </label>
-      <div class="pickup-pending-panel" ${request.praxioRequisition ? "hidden" : ""}>
+      <div class="pickup-pending-panel">
         <label class="field pickup-block-reason-field">
           Motivo da baixa pendente
           <select class="pickup-block-reason">
@@ -3361,12 +3441,6 @@ function createCard(request) {
       <small class="pickup-message"></small>
     `;
     actionGrid.before(pickupFields);
-    const syncPickupBlockReason = () => {
-      const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
-      pickupFields.querySelector(".pickup-pending-panel").hidden = Boolean(praxio);
-    };
-    pickupFields.querySelector(".pickup-praxio").addEventListener("input", syncPickupBlockReason);
-    syncPickupBlockReason();
     pickupFields.querySelector(".pickup-block-save").addEventListener("click", async () => {
       const reason = pickupFields.querySelector(".pickup-block-reason").value;
       const message = pickupFields.querySelector(".pickup-message");
@@ -3382,13 +3456,18 @@ function createCard(request) {
       const praxio = pickupFields.querySelector(".pickup-praxio").value.trim();
       const person = pickupFields.querySelector(".pickup-person").value.trim();
       const message = pickupFields.querySelector(".pickup-message");
+      const selectedPickupIndexes = getSelectedPickupItemIndexes(card);
       message.textContent = "";
+      if (selectedPickupIndexes.length === 0) {
+        message.textContent = "Selecione pelo menos um item para baixar o comprovante.";
+        return;
+      }
       if (!person) {
         message.textContent = "Informe quem está retirando para baixar o comprovante.";
         pickupFields.querySelector(".pickup-person").focus();
         return;
       }
-      downloadPickupReceiptPdf(request, { praxio, person, note: "" });
+      downloadPickupReceiptPdf(request, { praxio, person, note: "", selectedIndexes: selectedPickupIndexes });
     });
     const doneButton = document.createElement("button");
     doneButton.className = "action available pickup-confirm-button";
@@ -3399,6 +3478,11 @@ function createCard(request) {
       const person = pickupFields.querySelector(".pickup-person").value.trim();
       const blockReason = pickupFields.querySelector(".pickup-block-reason").value;
       const message = pickupFields.querySelector(".pickup-message");
+      const selectedPickupIndexes = getSelectedPickupItemIndexes(card);
+      if (selectedPickupIndexes.length === 0) {
+        message.textContent = "Selecione pelo menos um item retirado.";
+        return;
+      }
       if (!person) {
         message.textContent = "Informe quem está retirando.";
         pickupFields.querySelector(".pickup-person").focus();
@@ -3412,7 +3496,7 @@ function createCard(request) {
       if (confirmAlmoxPassword()) {
         const fallbackNote = partialPickup ? "Retirada parcial registrada pelo PCM." : "Itens retirados pelo PCM.";
         const pendingNote = !praxio ? ` Baixa Praxio pendente: ${blockReason}.` : "";
-        await markWithdrawn(request.id, `${note?.value || fallbackNote}${pendingNote}`, { praxio, person, blockReason });
+        await markWithdrawn(request.id, `${note?.value || fallbackNote}${pendingNote}`, { praxio, person, blockReason, selectedIndexes: selectedPickupIndexes });
       }
     });
     actionGrid.append(doneButton);
@@ -3424,6 +3508,12 @@ function createCard(request) {
 function createRequestCardTitle(request, items) {
   const count = Array.isArray(items) ? items.length : request.items?.length || 0;
   return `${formatItemCount(count)} nesta solicitação`;
+}
+
+function getSelectedPickupItemIndexes(card) {
+  return Array.from(card.querySelectorAll(".pickup-item-toggle:checked"))
+    .map((input) => Number(input.dataset.index))
+    .filter((index) => Number.isInteger(index));
 }
 
 function canRequestCancellation(request) {
@@ -3943,6 +4033,8 @@ async function registerPurchaseArrival(id, card) {
       purchaseArrivedDate: arrivedDate,
       purchaseArrivedAt: now,
       purchaseArrivedBy: currentUser.name || currentUser.label,
+      status: "recebimento",
+      statusItem: "recebimento",
     };
   });
   if (arrivedItemCount === 0) {
@@ -3953,6 +4045,7 @@ async function registerPurchaseArrival(id, card) {
     ...request,
     items,
     status: "recebimento",
+    updatedAt: now,
     purchaseArrivedDate: arrivedDate,
     purchaseArrivedAt: now,
     purchaseArrivedBy: currentUser.name || currentUser.label,
@@ -3961,8 +4054,8 @@ async function registerPurchaseArrival(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
+  await saveRequestSnapshotSafely(updatedRequest, "chegada de compra");
   openPurchaseArrivalEmailDraft(updatedRequest, "", arrivalEmailQtyByIndex);
-  await saveRequestsSafely("chegada de compra");
   render();
 }
 
@@ -4090,7 +4183,9 @@ async function markWithdrawn(id, response, pickupData = {}) {
   requests = requests.map((request) => {
     if (request.id !== id) return request;
     const now = new Date().toISOString();
-    const items = request.items.map((item) => {
+    const selectedSet = new Set((pickupData.selectedIndexes || []).map(Number));
+    const items = request.items.map((item, index) => {
+      if (selectedSet.size && !selectedSet.has(index)) return item;
       const releasable = getPickupReleasedQty(item);
       return { ...item, withdrawnQty: Math.max(getWithdrawnQty(item), releasable) };
     });
@@ -4221,17 +4316,26 @@ function hasItemLevelPurchaseArrivalData(request) {
   return Boolean(request?.items?.some((item) => Number(item.purchaseArrivedQty) > 0 || item.purchaseArrivedAt || item.purchaseArrivedDate));
 }
 
+function isItemMarkedForReceipt(item) {
+  return item?.status === "recebimento"
+    || item?.statusItem === "recebimento"
+    || /pendente entrada e recebimento/i.test(String(item?.status || ""))
+    || /pendente entrada e recebimento/i.test(String(item?.statusItem || ""));
+}
+
 function getPurchaseArrivedQtyForReceipt(request, item) {
   if (item.purchaseApproval !== "approved") return 0;
   const pending = getPurchasePendingQty(item);
   const arrived = Number(item.purchaseArrivedQty) || 0;
   if (arrived > 0) return Math.min(pending, arrived);
+  if (isItemMarkedForReceipt(item)) return pending;
   if (!hasItemLevelPurchaseArrivalData(request) && isPurchaseArrivalRegistered(request)) return pending;
   return 0;
 }
 
 function getPurchaseWaitingArrivalQty(request, item) {
   if (item.purchaseApproval !== "approved") return 0;
+  if (isItemMarkedForReceipt(item)) return 0;
   return Math.max(0, getPurchasePendingQty(item) - getPurchaseArrivedQtyForReceipt(request, item));
 }
 
@@ -4476,15 +4580,17 @@ function isPickupReceiptPartial(request) {
 function getStatusAfterPartialPickup(request) {
   const items = request?.items || [];
   if (getReceiptPendingItems(request).length > 0) return "recebimento";
+  if (items.some(isPickupItemPending)) return "atendimento";
   if (items.some((item) => getPurchasePendingQty(item) > 0)) return "compra";
   if (items.some((item) => getCdPendingQty(item) > 0)) return "cd";
-  if (items.some(isPickupItemPending)) return "atendimento";
   return request?.status || "atendimento";
 }
 
-function getPickupReceiptItems(request) {
+function getPickupReceiptItems(request, selectedIndexes = null) {
+  const selectedSet = selectedIndexes ? new Set(selectedIndexes.map(Number)) : null;
   return (request.items || [])
-    .map((item) => {
+    .map((item, index) => {
+      if (selectedSet && !selectedSet.has(index)) return null;
       const released = getPickupReleasedQty(item);
       const withdrawn = getWithdrawnQty(item);
       const pending = Math.max(0, released - withdrawn);
@@ -4497,11 +4603,11 @@ function getPickupReceiptItems(request) {
         withdrawnQty: withdrawn,
       };
     })
-    .filter((item) => item.pendingQty > 0 || item.releasedQty > 0);
+    .filter((item) => item && item.pendingQty > 0);
 }
 
 function downloadPickupReceiptPdf(request, pickupData = {}) {
-  const items = getPickupReceiptItems(request);
+  const items = getPickupReceiptItems(request, pickupData.selectedIndexes || null);
   if (!items.length) {
     window.alert("Nenhum item liberado para retirada nesta solicitação.");
     return;
@@ -7723,6 +7829,7 @@ function openReceiptEmailDraft(request, to, receiptQtyByIndex = null) {
       const index = request.items.indexOf(item);
       return receiptQtyByIndex ? receiptQtyByIndex[index] : Number(item.availableQty) || 0;
     }, (item) => [
+      receiptQtyByIndex ? `RECEBIDO NESTE LANÇAMENTO: ${receiptQtyByIndex[request.items.indexOf(item)] || 0} UNIDADES` : "",
       `ATENDIDO ALMOX: ${getAlmoxServedQty(item)} UNIDADES`,
       `RECEBIDO CD: ${item.cdReceivedQty || 0} UNIDADES`,
       `RECEBIDO COMPRA: ${item.purchaseReceivedQty || 0} UNIDADES`,

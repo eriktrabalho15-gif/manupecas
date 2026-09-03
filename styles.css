@@ -2822,6 +2822,34 @@ dd {
   background: var(--panel-strong);
 }
 
+.parts-list li.pickup-selectable-item {
+  grid-template-columns: 102px 92px minmax(180px, 1fr) 104px 68px 62px 62px 62px 72px;
+  gap: 12px;
+}
+
+.pickup-item-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #b7ead5;
+  border-radius: 8px;
+  background: #e4f9ef;
+  color: var(--green-dark);
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.pickup-item-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--green);
+}
+
 .parts-list strong {
   color: var(--green-dark);
 }
@@ -4014,7 +4042,8 @@ body[data-role="admin"] .request-card {
 
   .parts-list li > strong,
   .parts-list li > span,
-  .parts-list li > .item-status {
+  .parts-list li > .item-status,
+  .parts-list li > .pickup-item-check {
     flex: 1 0 100%;
   }
 

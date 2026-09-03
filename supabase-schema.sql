@@ -70,10 +70,14 @@ create table if not exists public.solicitacao_itens (
   quantidade_almox numeric default 0,
   quantidade_cd numeric default 0,
   quantidade_compra numeric default 0,
+  quantidade_compra_chegou numeric default 0,
   quantidade_retirada numeric default 0,
   status_item text,
   nf_transferencia text,
   entrada_sap text,
+  chegada_compra_em timestamptz,
+  data_chegada_compra date,
+  responsavel_chegada_compra text,
   criado_em timestamptz default now()
 );
 
@@ -158,10 +162,14 @@ alter table public.solicitacao_itens add column if not exists quantidade_solicit
 alter table public.solicitacao_itens add column if not exists quantidade_almox numeric default 0;
 alter table public.solicitacao_itens add column if not exists quantidade_cd numeric default 0;
 alter table public.solicitacao_itens add column if not exists quantidade_compra numeric default 0;
+alter table public.solicitacao_itens add column if not exists quantidade_compra_chegou numeric default 0;
 alter table public.solicitacao_itens add column if not exists quantidade_retirada numeric default 0;
 alter table public.solicitacao_itens add column if not exists status_item text;
 alter table public.solicitacao_itens add column if not exists nf_transferencia text;
 alter table public.solicitacao_itens add column if not exists entrada_sap text;
+alter table public.solicitacao_itens add column if not exists chegada_compra_em timestamptz;
+alter table public.solicitacao_itens add column if not exists data_chegada_compra date;
+alter table public.solicitacao_itens add column if not exists responsavel_chegada_compra text;
 alter table public.solicitacao_itens add column if not exists criado_em timestamptz default now();
 
 alter table public.atendimentos_cd add column if not exists solicitacao_numero text;
