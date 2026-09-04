@@ -388,7 +388,7 @@ form.addEventListener("submit", async (event) => {
 
     if (!recentDuplicate) {
       try {
-        if (savedRequest.status === "cadastro") {
+        if (savedRequest.items?.some(isPendingRegistrationItem)) {
           openPartRegistrationEmailDraft(savedRequest);
         } else {
           openEmailDraft(savedRequest, "");
@@ -719,6 +719,9 @@ async function startApp() {
   if (applyCompletedPartRegistrationsToRequests()) {
     await saveRequestsSafely("cadastros SAP concluídos");
   }
+  if (repairResolvedPartRegistrationBacklog()) {
+    savePartRegistrations();
+  }
   if (repairCompletedRegistrationsWithoutRequest()) {
     await saveRequestsSafely("cadastros concluídos sem solicitação");
     savePartRegistrations();
@@ -869,12 +872,12 @@ function getUserNotifications() {
       if (request.status === "solicitacao") push(request, "almox", "Pendente de atendimento do Almoxarifado", "solicitacao");
       if (isSapRequestPending(request)) push(request, "sap", request.sapDraftNumber ? "Pendente aprovação do esboço SAP" : "Pendente esboço SAP", "compra");
       if (isWaitingArrivalPending(request)) push(request, "espera", "Aguardando chegada da peça", "espera");
-      if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
+      if (getReceiptPendingItems(request).length > 0) push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
       if (hasPickupPending(request)) push(request, "retirada", "Retirada do PCM pendente", "atendimento");
     }
     if (currentUser.role === "cd") {
       if (request.status === "cd") push(request, "cd", "Pendente de atendimento do CD", "cd");
-      if (getDisplayStatus(request) === "recebimento") push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
+      if (getReceiptPendingItems(request).length > 0) push(request, "recebimento", "Pendente entrada e recebimento", "recebimento");
     }
     if ((currentUser.role === "manager" || currentUser.role === "admin") && hasPurchasedItemWaitingReceipt(request)) {
       push(request, "chegada-compra", "Item comprado chegou", "compra", "history", getReceiptPendingItems(request).length);
@@ -901,7 +904,7 @@ function getUserNotifications() {
 function getNotificationItemCount(request, filter) {
   if (filter === "atendimento" || filter === "retirada") return request.items.filter(isPickupItemPending).length;
   if (filter === "recebimento") return getReceiptPendingItems(request).length;
-  if (filter === "espera") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
+  if (filter === "espera") return getPurchaseWaitingArrivalItems(request).length;
   if (filter === "compra" && currentUser?.role === "compras") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "compra") return request.items.filter((item) => isPurchaseItemActive(request, item)).length;
   if (filter === "cd") return request.items.filter((item) => getCdPendingQty(item) > 0).length;
@@ -2980,7 +2983,8 @@ function render() {
     }
     if (currentUser.role === "pcm") {
       if (currentFilter === "atendimento") return hasPickupPending(request);
-      if (currentFilter === "compra" || currentFilter === "espera") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
+      if (currentFilter === "espera") return isWaitingArrivalPending(request);
+      if (currentFilter === "compra") return request.status === "aprovacao" || request.status === "compra" || request.status === "recebimento" || request.status === "reprovado";
       if (currentFilter === "solicitacao") return request.status === "solicitacao" || request.status === "cadastro";
       return request.status === currentFilter;
     }
@@ -3123,7 +3127,6 @@ function createCard(request) {
   const pickupFilterActive = currentFilter === "atendimento" || currentFilter === "retirada";
   const pickupMode = currentUser.role === "almox" && pickupFilterActive && hasPickupPending(request);
   const pickupOnlyView = pickupFilterActive && (currentUser.role === "almox" || currentUser.role === "pcm" || currentUser.role === "admin" || currentUser.role === "manager") && hasPickupPending(request);
-  const receiptOnlyView = currentFilter === "recebimento" && getDisplayStatus(request) === "recebimento";
   const purchaseOnlyView = currentFilter === "compra" && currentUser.role === "almox";
   const displayItems = getDisplayItemsForCurrentView(request);
   const status = card.querySelector(".status-pill");
@@ -3173,7 +3176,8 @@ function createCard(request) {
   const isSapRequestQueue = isSapRequestView && currentUser.role === "almox";
   const isWaitingArrivalQueue = isWaitingArrivalView && currentUser.role === "almox";
   const isBuyerPurchaseQueue = false;
-  const isCancellationStatus = getDisplayStatus(request) === "cancelamento" || getDisplayStatus(request) === "cancelado";
+  const requestDisplayStatus = getDisplayStatus(request);
+  const isCancellationStatus = requestDisplayStatus === "cancelamento" || requestDisplayStatus === "cancelado";
   const canCurrentUserReceive = (currentUser.role === "almox" || currentUser.role === "cd") && currentFilter === "recebimento";
   const isReceiptQueue = isReceiptFlow && canCurrentUserReceive;
   const isCdAttendanceQueue = currentUser.role === "cd" && currentFilter === "cd" && getDisplayStatus(request) === "cd";
@@ -3263,7 +3267,7 @@ function createCard(request) {
     }
   });
 
-  if (request.status === "cadastro") {
+  if (requestDisplayStatus === "cadastro") {
     fulfillmentPanel.hidden = true;
     purchaseWorkflow.classList.remove("active");
   }
@@ -3332,7 +3336,7 @@ function createCard(request) {
     : isArrivalSelectionFlow
     ? getPurchaseWaitingArrivalItems(request)
     : request.items.filter((item) => isPurchaseItemActive(request, item));
-  fulfillmentPanel.hidden = (request.status === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
+  fulfillmentPanel.hidden = (requestDisplayStatus === "cadastro" || isCancellationStatus || isPurchaseQueuePending(request) || request.status === "aprovacao" || isReceiptFlow) && !pickupMode ? true : false;
   purchaseWorkflow.classList.toggle("active", ((isSapRequestView || isWaitingArrivalView || isReceiptQueue) && !pickupMode && !isCancellationStatus));
   if (isCdAttendanceQueue) {
     fulfillmentPanel.hidden = false;
@@ -4150,8 +4154,8 @@ async function confirmReceiptEntry(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
+  await saveRequestSnapshotSafely(updatedRequest, "recebimento");
   openReceiptEmailDraft(updatedRequest, "", receiptEmailQtyByIndex);
-  await saveRequestsSafely("recebimento");
   render();
 }
 
@@ -4180,6 +4184,7 @@ function confirmAlmoxPassword() {
 }
 
 async function markWithdrawn(id, response, pickupData = {}) {
+  let updatedRequest = null;
   requests = requests.map((request) => {
     if (request.id !== id) return request;
     const now = new Date().toISOString();
@@ -4191,7 +4196,7 @@ async function markWithdrawn(id, response, pickupData = {}) {
     });
     const allWithdrawn = items.every((item) => getWithdrawnQty(item) >= (Number(item.quantity) || 0));
     const nextStatus = allWithdrawn ? "retirado" : getStatusAfterPartialPickup({ ...request, items });
-    return {
+    updatedRequest = {
       ...request,
       items,
       status: nextStatus,
@@ -4208,16 +4213,22 @@ async function markWithdrawn(id, response, pickupData = {}) {
       partialPickupAt: allWithdrawn ? request.partialPickupAt || "" : now,
       withdrawnAt: allWithdrawn ? now : request.withdrawnAt || "",
     };
+    return updatedRequest;
   });
-  await saveRequestsSafely("retirada");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "retirada");
+  } else {
+    await saveRequestsSafely("retirada");
+  }
   render();
 }
 
 async function registerPickupBlock(id, reason) {
   const now = new Date().toISOString();
+  let updatedRequest = null;
   requests = requests.map((request) => {
     if (request.id !== id) return request;
-    return {
+    updatedRequest = {
       ...request,
       response: `Baixa pendente: ${reason}. Registrado em ${formatDate(now)} por ${currentUser.name || currentUser.label}.`,
       pickupBlockReason: reason,
@@ -4226,8 +4237,13 @@ async function registerPickupBlock(id, reason) {
       pickupBlockByEmail: currentUser.email,
       pickupAt: request.pickupAt || now,
     };
+    return updatedRequest;
   });
-  await saveRequestsSafely("pendência de baixa");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "pendência de baixa");
+  } else {
+    await saveRequestsSafely("pendência de baixa");
+  }
   render();
 }
 
@@ -6429,6 +6445,36 @@ function applyCompletedPartRegistrationsToRequests() {
   return changed;
 }
 
+function repairResolvedPartRegistrationBacklog() {
+  let changed = false;
+  const now = new Date().toISOString();
+  partRegistrations = partRegistrations.map((registration) => {
+    if (registration.status === "done" || !registration.linkedRequestId) return registration;
+    const request = requests.find((item) => item.id === registration.linkedRequestId);
+    if (!request || request.items.some(isPendingRegistrationItem)) return registration;
+    const resolvedItem = (request.items || []).find((item) => {
+      if (!hasRealSapCode(item)) return false;
+      const registrationDescription = getRegistrationDescription(registration);
+      const itemDescription = normalizeSearchText(item.description || "");
+      if (registrationDescription && itemDescription === registrationDescription) return true;
+      const originalCode = getRegistrationOriginalCode(registration);
+      return originalCode && normalizeSearchText(item.pendingOriginalCode || item.description || "").includes(originalCode);
+    }) || (request.items || []).find(hasRealSapCode);
+    if (!resolvedItem) return registration;
+    changed = true;
+    return {
+      ...registration,
+      status: "done",
+      createdCode: registration.createdCode || resolvedItem.code || "",
+      createdDescription: registration.createdDescription || resolvedItem.description || registration.description || "",
+      completedAt: registration.completedAt || request.updatedAt || now,
+      completedBy: registration.completedBy || "Sistema",
+    };
+  });
+  if (changed) savePartRegistrationsLocalCache();
+  return changed;
+}
+
 async function completePartRegistration(id, code, finalDescription, useExisting = false) {
   if (!canManagePartRegistrations()) return;
   const cleanCode = String(code || "").trim();
@@ -6508,7 +6554,11 @@ async function completePartRegistration(id, code, finalDescription, useExisting 
       closePreparedMailPopup();
     }
   }
-  await saveRequestsSafely("cadastro de item");
+  if (updatedRequests.length > 0) {
+    await Promise.all(updatedRequests.map((request) => saveRequestSnapshotSafely(request, "cadastro de item")));
+  } else {
+    await saveRequestsSafely("cadastro de item");
+  }
   saveCustomParts();
   savePartRegistrations();
   renderPartRegistrations();
@@ -7580,9 +7630,8 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
   const cc = formatOutlookWebRecipients(finalRecipients.cc);
   console.info("ManuPeças e-mail", { etapa: finalRecipients.step || "manual", para: recipient, copia: cc });
   const params = [];
-  const outlookRecipient = recipient && cc ? `${recipient}?cc=${cc}` : recipient;
-  if (outlookRecipient) params.push(`to=${encodeMailParam(outlookRecipient)}`);
-  if (!recipient && cc) params.push(`cc=${encodeMailParam(cc)}`);
+  if (recipient) params.push(`to=${encodeMailParam(recipient)}`);
+  if (cc) params.push(`cc=${encodeMailParam(cc)}`);
   params.push(`subject=${encodeMailParam(subject || "")}`);
   params.push(`body=${encodeMailParam(bodyText || "")}`);
   const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?${params.join("&")}`;
@@ -7909,10 +7958,11 @@ function getRegistrationStepInfo(request) {
   const linked = partRegistrations.filter((item) => item.linkedRequestId === request.id);
   const hasPendingItem = request.items.some(isPendingRegistrationItem);
   const doneRegistration = linked.find((item) => item.status === "done" && item.completedAt);
+  const linkedAllResolvedInRequest = linked.length > 0 && !hasPendingItem;
   return {
     requested: hasPendingItem || linked.length > 0,
-    done: !hasPendingItem && linked.some((item) => item.status === "done"),
-    date: doneRegistration?.completedAt || "",
+    done: linkedAllResolvedInRequest || (!hasPendingItem && linked.some((item) => item.status === "done")),
+    date: doneRegistration?.completedAt || (linkedAllResolvedInRequest ? request.updatedAt || request.createdAt || "" : ""),
   };
 }
 
