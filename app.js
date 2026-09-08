@@ -3631,7 +3631,11 @@ async function requestCancellation(id) {
   });
   persistRequestsLocally();
   if (updatedRequest) openCancellationRequestEmailDraft(updatedRequest, "");
-  await saveRequestsSafely("solicitação de cancelamento");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "solicitação de cancelamento");
+  } else {
+    await saveRequestsSafely("solicitação de cancelamento");
+  }
   render();
 }
 
@@ -3667,7 +3671,11 @@ async function approveCancellation(id) {
   render();
   persistRequestsLocally();
   if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, true, "");
-  await saveRequestsSafely("aprovação de cancelamento");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "aprovação de cancelamento");
+  } else {
+    await saveRequestsSafely("aprovação de cancelamento");
+  }
 }
 
 async function rejectCancellation(id) {
@@ -3702,7 +3710,11 @@ async function rejectCancellation(id) {
   render();
   persistRequestsLocally();
   if (updatedRequest) openCancellationDecisionEmailDraft(updatedRequest, false, "");
-  await saveRequestsSafely("recusa de cancelamento");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "recusa de cancelamento");
+  } else {
+    await saveRequestsSafely("recusa de cancelamento");
+  }
 }
 
 function resolveCancellationRestoredStatus(request) {
@@ -3840,7 +3852,7 @@ async function saveFulfillment(id, card, shouldEmail) {
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
   openAlmoxEmailDraft(updatedRequest, "");
-  await saveRequestsSafely("atendimento do Almoxarifado");
+  await saveRequestSnapshotSafely(updatedRequest, "atendimento do Almoxarifado");
 
   render();
 }
@@ -3849,7 +3861,6 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   if (currentUser.role !== "cd") return;
   const request = requests.find((item) => item.id === id);
   if (!request) return;
-  if (shouldEmail) prepareMailPopup();
 
   const rowsByIndex = new Map([...card.querySelectorAll(".fulfillment-row")].map((row) => [Number(row.dataset.index), row]));
   const updatedItems = request.items.map((item, index) => {
@@ -3873,15 +3884,16 @@ async function saveCdFulfillment(id, card, shouldEmail) {
   const response = buildCdResponseText(finalItems);
   const invoiceInput = card.querySelector(".transfer-invoice");
   const selectedInvoice = invoiceInput.files.length ? invoiceInput.files[0].name : "";
-  const selectedInvoiceDataUrl = invoiceInput.files.length ? await readFileAsDataUrl(invoiceInput.files[0]) : "";
   const transferInvoiceName = selectedInvoice || request.transferInvoiceName || "";
-  const transferInvoiceDataUrl = selectedInvoiceDataUrl || request.transferInvoiceDataUrl || "";
 
   if (cdAnsweredQty > 0 && !transferInvoiceName) {
     card.querySelector(".invoice-name").textContent = "Selecione a NF de transferência antes de salvar.";
     return;
   }
 
+  prepareMailPopup();
+  const selectedInvoiceDataUrl = invoiceInput.files.length ? await readFileAsDataUrl(invoiceInput.files[0]) : "";
+  const transferInvoiceDataUrl = selectedInvoiceDataUrl || request.transferInvoiceDataUrl || "";
   const now = new Date().toISOString();
   const updatedRequest = {
     ...request,
@@ -3900,10 +3912,8 @@ async function saveCdFulfillment(id, card, shouldEmail) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
-  if (shouldEmail) {
-    openCdEmailDraft(updatedRequest, "");
-  }
-  await saveRequestsSafely("atendimento do CD");
+  openCdEmailDraft(updatedRequest, "");
+  await saveRequestSnapshotSafely(updatedRequest, "atendimento do CD");
 
   render();
 }
@@ -3945,7 +3955,7 @@ async function savePurchaseOrder(id, card, shouldEmail) {
   if (purchaseOrder) {
     openPurchaseEmailDraft(updatedRequest, "");
   }
-  await saveRequestsSafely("pedido de compra");
+  await saveRequestSnapshotSafely(updatedRequest, "pedido de compra");
 
   render();
 }
@@ -4005,7 +4015,7 @@ async function saveSapRequestNumber(id, card) {
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
   openPurchaseEmailDraft(updatedRequest, "");
-  await saveRequestsSafely("solicitação SAP");
+  await saveRequestSnapshotSafely(updatedRequest, "solicitação SAP");
   render();
 }
 
@@ -4058,8 +4068,8 @@ async function registerPurchaseArrival(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
-  await saveRequestSnapshotSafely(updatedRequest, "chegada de compra");
   openPurchaseArrivalEmailDraft(updatedRequest, "", arrivalEmailQtyByIndex);
+  await saveRequestSnapshotSafely(updatedRequest, "chegada de compra");
   render();
 }
 
@@ -4154,8 +4164,8 @@ async function confirmReceiptEntry(id, card) {
 
   requests = requests.map((item) => (item.id === id ? updatedRequest : item));
   persistRequestsLocally();
-  await saveRequestSnapshotSafely(updatedRequest, "recebimento");
   openReceiptEmailDraft(updatedRequest, "", receiptEmailQtyByIndex);
+  await saveRequestSnapshotSafely(updatedRequest, "recebimento");
   render();
 }
 
@@ -7338,7 +7348,11 @@ async function approvePurchase(id, mode = "all", selectedCodes = []) {
   });
   persistRequestsLocally();
   if (approvedRequest) openApprovalEmailDraft(approvedRequest, "");
-  await saveRequestsSafely("aprovação de compra");
+  if (approvedRequest) {
+    await saveRequestSnapshotSafely(approvedRequest, "aprovação de compra");
+  } else {
+    await saveRequestsSafely("aprovação de compra");
+  }
   render();
   renderApprovalQueue();
 }
@@ -7438,7 +7452,11 @@ async function savePurchaseDelivery(id, purchaseOrder, deliveryDate, buyerNote =
     persistRequestsLocally();
     openPurchaseEmailDraft(updatedRequest, "");
   }
-  await saveRequestsSafely("atualização de compras");
+  if (updatedRequest) {
+    await saveRequestSnapshotSafely(updatedRequest, "atualização de compras");
+  } else {
+    await saveRequestsSafely("atualização de compras");
+  }
   render();
 }
 
@@ -7641,7 +7659,7 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
     return;
   }
   const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
-  if (!opened) window.location.href = mailtoUrl;
+  if (!opened) window.location.href = outlookUrl;
 }
 
 function buildMailtoUrl(to, cc, subject, bodyText) {
