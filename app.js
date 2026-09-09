@@ -7552,22 +7552,24 @@ function userLoginToEmail(login) {
 
 function getEmailRecipients(step, fallback = "") {
   const setting = normalizeEmailStepSetting(emailSettings?.[step], null);
-  const to = [
+  const configuredTo = [
     ...(setting.toUsers || []).map(userLoginToEmail),
     ...splitEmailLikeList(setting.extraTo || "").map(userLoginToEmail),
   ].filter(Boolean);
+  const fallbackTo = splitEmailLikeList(typeof fallback === "object" ? fallback.to : fallback).map(userLoginToEmail).filter(Boolean);
+  const to = configuredTo.length ? configuredTo : fallbackTo;
   const cc = [
     ...(setting.ccUsers || []).map(userLoginToEmail),
     ...splitEmailLikeList(setting.extraCc || "").map(userLoginToEmail),
+    ...splitEmailLikeList(typeof fallback === "object" ? fallback.cc : "").map(userLoginToEmail),
   ].filter(Boolean);
   const uniqueTo = to.filter((email, index, list) => list.indexOf(email) === index);
   const toSet = new Set(uniqueTo.map((email) => email.toLowerCase()));
   const uniqueCc = cc.filter((email, index, list) => email && !toSet.has(email.toLowerCase()) && list.indexOf(email) === index);
-  const fallbackTo = normalizeEmailList(fallback);
   return {
     step,
     fallback,
-    to: uniqueTo.join(";") || fallbackTo,
+    to: uniqueTo.join(";") || normalizeEmailList(typeof fallback === "object" ? fallback.to : fallback),
     cc: uniqueCc.join(";"),
   };
 }
@@ -7658,8 +7660,8 @@ function openMailDraftInOutlookWeb(recipients, subject, bodyText, popup = null) 
     renderMailFallbackPage(popup, outlookUrl, mailtoUrl);
     return;
   }
-  const opened = window.open(outlookUrl, "_blank", "noopener,noreferrer");
-  if (!opened) window.location.href = outlookUrl;
+  openMailtoDraft(mailtoUrl);
+  showEmailFallbackNotice(outlookUrl, mailtoUrl);
 }
 
 function buildMailtoUrl(to, cc, subject, bodyText) {
@@ -7696,26 +7698,54 @@ function renderMailFallbackPage(popup, outlookUrl, mailtoUrl) {
 <body>
   <main>
     <h1>Abrindo e-mail...</h1>
-    <p>Se o Outlook Web não abrir sozinho, use uma das opções abaixo.</p>
+    <p>Se o Outlook não abrir sozinho, use uma das opções abaixo.</p>
     <div class="actions">
-      <a class="primary" href="${outlookAttr}">Abrir no Outlook Web</a>
-      <a class="secondary" href="${mailtoAttr}">Abrir no aplicativo de e-mail</a>
+      <a class="primary" href="${mailtoAttr}">Abrir no Outlook</a>
+      <a class="secondary" href="${outlookAttr}">Abrir no Outlook Web</a>
     </div>
     <small>O e-mail já foi preparado com destinatários, assunto e texto.</small>
   </main>
   <script>
-    setTimeout(function(){ window.location.href = ${JSON.stringify(outlookUrl)}; }, 250);
+    setTimeout(function(){ window.location.href = ${JSON.stringify(mailtoUrl)}; }, 250);
   </script>
 </body>
 </html>`);
     popup.document.close();
   } catch {
     try {
-      popup.location.href = outlookUrl;
+      popup.location.href = mailtoUrl;
     } catch {
       window.location.href = mailtoUrl;
     }
   }
+}
+
+function openMailtoDraft(mailtoUrl) {
+  const link = document.createElement("a");
+  link.href = mailtoUrl;
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function showEmailFallbackNotice(outlookUrl, mailtoUrl) {
+  const existing = document.querySelector(".email-fallback-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.className = "email-fallback-toast";
+  toast.innerHTML = `
+    <strong>E-mail preparado</strong>
+    <span>Se o Outlook não abriu, tente novamente por aqui.</span>
+    <div>
+      <a href="${escapeAttr(mailtoUrl)}">Abrir Outlook</a>
+      <a href="${escapeAttr(outlookUrl)}" target="_blank" rel="noopener noreferrer">Outlook Web</a>
+      <button type="button" aria-label="Fechar aviso">x</button>
+    </div>
+  `;
+  toast.querySelector("button")?.addEventListener("click", () => toast.remove());
+  document.body.append(toast);
+  window.setTimeout(() => toast.remove(), 18000);
 }
 
 function cleanEmailText(value) {
@@ -7770,7 +7800,13 @@ function openPartRegistrationEmailDraft(request) {
     { title: "Motivo", content: request.reason },
   ]);
 
-  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
+  openMailDraft({
+    step: "registration",
+    fallback: {
+      to: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`,
+      cc: userLoginToEmail(request.requestedByEmail || request.requestedBy),
+    },
+  }, subject, bodyText);
 }
 
 function openStandalonePartRegistrationEmailDraft(registration) {
@@ -7781,7 +7817,13 @@ function openStandalonePartRegistrationEmailDraft(registration) {
     { title: "Próxima etapa", content: "Após cadastrar ou localizar o item no SAP, preencher Código SAP e Descrição SAP no ManuPeças." },
   ]);
 
-  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
+  openMailDraft({
+    step: "registration",
+    fallback: {
+      to: `${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`,
+      cc: userLoginToEmail(registration.requestedByEmail || registration.requestedBy),
+    },
+  }, subject, bodyText);
 }
 
 function formatPendingPhotoNames(item) {
@@ -7800,7 +7842,13 @@ function openPartRegistrationCompletedEmailDraft(request, part, useExisting = fa
     { title: "Próxima etapa", content: "Atendimento do Almoxarifado." },
   ]);
 
-  openMailDraft({ step: "registration", fallback: `${userLoginToEmail("jessica.lopes")}; ${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}` }, subject, bodyText);
+  openMailDraft({
+    step: "registration",
+    fallback: {
+      to: userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes"),
+      cc: `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("erik.barreto")}; ${userLoginToEmail("bruno.medici")}`,
+    },
+  }, subject, bodyText);
 }
 
 function openAlmoxEmailDraft(request, to) {
@@ -7835,7 +7883,13 @@ function openCdEmailDraft(request, to) {
     { title: "Anexo", content: request.transferInvoiceName ? `Anexar a NF selecionada: ${request.transferInvoiceName}` : "Anexar a NF de transferência antes do envio final." },
   ]);
 
-  openMailDraft({ step: "cd", fallback: to || userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes") }, subject, bodyText);
+  openMailDraft({
+    step: "cd",
+    fallback: {
+      to: to || userLoginToEmail(request.almoxByEmail || request.almoxBy || "jessica.lopes"),
+      cc: `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("erik.barreto")}`,
+    },
+  }, subject, bodyText);
 }
 
 function openApprovalEmailDraft(request, to) {
@@ -7883,7 +7937,13 @@ function openPurchaseArrivalEmailDraft(request, to, arrivalQtyByIndex = null) {
     ]) : "Nenhum item comprado pendente de recebimento." },
   ]);
 
-  openMailDraft({ step: "receipt", fallback: to || `${userLoginToEmail(request.requestedByEmail || request.requestedBy)}; ${userLoginToEmail("rodrigo.araujo")}` }, subject, bodyText);
+  openMailDraft({
+    step: "receipt",
+    fallback: {
+      to: to || userLoginToEmail(request.requestedByEmail || request.requestedBy),
+      cc: `${userLoginToEmail("rodrigo.araujo")}; ${userLoginToEmail("erik.barreto")}`,
+    },
+  }, subject, bodyText);
 }
 
 function openReceiptEmailDraft(request, to, receiptQtyByIndex = null) {
@@ -7904,7 +7964,13 @@ function openReceiptEmailDraft(request, to, receiptQtyByIndex = null) {
     ]) : "Nenhum item disponível para retirada." },
   ]);
 
-  openMailDraft({ step: "pickup", fallback: to || userLoginToEmail(request.requestedByEmail || request.requestedBy) }, subject, bodyText);
+  openMailDraft({
+    step: "pickup",
+    fallback: {
+      to: to || userLoginToEmail(request.requestedByEmail || request.requestedBy),
+      cc: userLoginToEmail("erik.barreto"),
+    },
+  }, subject, bodyText);
 }
 
 function openCancellationRequestEmailDraft(request, to) {
