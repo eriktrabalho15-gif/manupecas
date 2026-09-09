@@ -1479,7 +1479,7 @@ body[data-view="app"] .login-screen {
 .history-item-header,
 .history-item-row {
   display: grid;
-  grid-template-columns: 96px minmax(240px, 1fr) 58px 68px 58px 76px minmax(120px, 0.65fr) minmax(130px, 0.65fr) minmax(130px, 0.65fr);
+  grid-template-columns: 96px minmax(240px, 1fr) 58px 68px 58px 76px minmax(130px, 0.7fr) minmax(130px, 0.65fr) minmax(130px, 0.65fr);
   column-gap: 12px;
   align-items: center;
   padding: 10px 12px;
@@ -3099,6 +3099,19 @@ dd {
   color: var(--amber);
   font-size: 1rem;
   font-weight: 900;
+}
+
+.purchase-title small {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(176, 106, 0, 0.22);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  vertical-align: middle;
 }
 
 .purchase-items {

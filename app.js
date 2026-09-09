@@ -3202,7 +3202,11 @@ function createCard(request) {
   response.textContent = request.response;
   if (note) note.value = request.response;
   renderCancellationPanel(request, cancelPanel);
-  purchaseTitle.textContent = isReceiptFlow ? "Recebimento e entrada SAP" : isWaitingArrivalQueue ? "Em espera" : "Solicitação SAP";
+  purchaseTitle.innerHTML = isReceiptFlow
+    ? "Recebimento e entrada SAP"
+    : isWaitingArrivalQueue
+    ? `Em espera <small>${escapeHtml(getSapReferenceLabel(request))}</small>`
+    : "Solicitação SAP";
   sapDraftInput.value = request.sapDraftNumber || "";
   sapDraftInput.readOnly = currentUser.role !== "almox" || Boolean(request.sapDraftNumber);
   sapRequestInput.value = request.sapRequestNumber || "";
@@ -4502,7 +4506,7 @@ function getRequestStatusText(request, displayStatus = getDisplayStatus(request)
   if (displayStatus === "compra") {
     if (!request.sapDraftNumber) return "Pendente esboço SAP pelo Almoxarifado";
     if (!request.sapRequestNumber) return "Pendente aprovação do esboço SAP";
-    if (isWaitingArrivalPending(request)) return "Em espera da chegada da peça";
+    if (isWaitingArrivalPending(request)) return `Em espera da chegada da peça | ${getSapReferenceLabel(request)}`;
   }
   return statusText[displayStatus] || displayStatus || "-";
 }
@@ -4544,8 +4548,8 @@ function getItemPurchaseStatus(request, item) {
     if ((Number(item.purchaseReceivedQty) || 0) > 0) return "Recebido pelo Almoxarifado";
     if (getPurchaseArrivedQtyForReceipt(request, item) > 0) return "Pendente entrada e recebimento";
     if (request.purchaseOrder) return request.deliveryDate ? "Pendente de chegada e recebimento" : "Pendente de data de chegada";
-    if (request.sapRequestNumber) return "Solicitação SAP aberta";
-    if (request.sapDraftNumber) return "Aguardando aprovação do esboço SAP";
+    if (request.sapRequestNumber) return `${getSapReferenceLabel(request)} aberta`;
+    if (request.sapDraftNumber) return `Aguardando aprovação do ${getSapReferenceLabel(request)}`;
     return "Aprovada para compra";
   }
   if (item.purchaseApproval === "rejected") return "Não aprovado";
@@ -6329,6 +6333,9 @@ function repairCompletedRegistrationsWithoutRequest() {
 
 function renderPartRegistrations() {
   if (!partRegistrationList) return;
+  if (repairResolvedPartRegistrationBacklog()) {
+    savePartRegistrations();
+  }
   const canManage = canManagePartRegistrations();
   const statusFilter = partRegistrationStatusFilter?.value || "";
   const visibleRegistrations = [...partRegistrations]
@@ -6461,15 +6468,8 @@ function repairResolvedPartRegistrationBacklog() {
   partRegistrations = partRegistrations.map((registration) => {
     if (registration.status === "done" || !registration.linkedRequestId) return registration;
     const request = requests.find((item) => item.id === registration.linkedRequestId);
-    if (!request || request.items.some(isPendingRegistrationItem)) return registration;
-    const resolvedItem = (request.items || []).find((item) => {
-      if (!hasRealSapCode(item)) return false;
-      const registrationDescription = getRegistrationDescription(registration);
-      const itemDescription = normalizeSearchText(item.description || "");
-      if (registrationDescription && itemDescription === registrationDescription) return true;
-      const originalCode = getRegistrationOriginalCode(registration);
-      return originalCode && normalizeSearchText(item.pendingOriginalCode || item.description || "").includes(originalCode);
-    }) || (request.items || []).find(hasRealSapCode);
+    if (!request) return registration;
+    const resolvedItem = findResolvedRequestItemForRegistration(request, registration);
     if (!resolvedItem) return registration;
     changed = true;
     return {
@@ -6483,6 +6483,47 @@ function repairResolvedPartRegistrationBacklog() {
   });
   if (changed) savePartRegistrationsLocalCache();
   return changed;
+}
+
+function findResolvedRequestItemForRegistration(request, registration) {
+  const items = (request?.items || []).filter(hasRealSapCode);
+  if (!items.length) return null;
+
+  return items.find((item) => item.pendingRegistrationId === registration.id)
+    || items.find((item) => doesResolvedItemMatchRegistration(item, registration, true))
+    || items.find((item) => doesResolvedItemMatchRegistration(item, registration, false))
+    || null;
+}
+
+function doesResolvedItemMatchRegistration(item, registration, strict = false) {
+  const itemDescription = normalizeSearchText(item.description || "");
+  const registrationDescription = getRegistrationDescription(registration);
+  const originalCode = getRegistrationOriginalCode(registration);
+  const itemOriginal = normalizeSearchText(item.pendingOriginalCode || "");
+
+  if (originalCode && itemOriginal && itemOriginal === originalCode) return true;
+  if (!itemDescription || !registrationDescription) return false;
+  if (itemDescription === registrationDescription) return true;
+  if (itemDescription.includes(registrationDescription) || registrationDescription.includes(itemDescription)) return true;
+  if (strict) return false;
+
+  return getTextTokenOverlapScore(itemDescription, registrationDescription) >= 0.82;
+}
+
+function getTextTokenOverlapScore(left, right) {
+  const leftTokens = getComparableTokens(left);
+  const rightTokens = getComparableTokens(right);
+  if (!leftTokens.length || !rightTokens.length) return 0;
+  const rightSet = new Set(rightTokens);
+  const matches = leftTokens.filter((token) => rightSet.has(token)).length;
+  return matches / Math.max(leftTokens.length, rightTokens.length);
+}
+
+function getComparableTokens(value) {
+  return normalizeSearchText(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => (token.length > 2 || ["le", "ld"].includes(token)) && !["para", "com", "sem", "lado"].includes(token));
 }
 
 async function completePartRegistration(id, code, finalDescription, useExisting = false) {
@@ -7113,6 +7154,12 @@ function createHistoryItemDetails(request) {
     </div>
     ${rows}
   `;
+}
+
+function getSapReferenceLabel(request) {
+  if (request?.sapRequestNumber) return `Solicitação SAP ${request.sapRequestNumber}`;
+  if (request?.sapDraftNumber) return `Esboço SAP ${request.sapDraftNumber}`;
+  return "-";
 }
 
 function getHistoryItemStageStatus(request, item) {
