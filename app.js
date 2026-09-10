@@ -698,12 +698,12 @@ async function startApp() {
   if (repairBp0030VoltageRegulatorCdFulfillment()) {
     await saveRequestsSafely("ajuste BP - 0030");
   }
-  if (repairBp0256WrongCdFulfillment()) {
+  if (repairBp0256CdFulfillment()) {
     const repairedBp0256 = requests.find((request) => isRequestNumber(request, "0256"));
     if (repairedBp0256) {
-      await saveRequestSnapshotSafely(repairedBp0256, "reabertura BP - 0256 para CD");
+      await saveRequestSnapshotSafely(repairedBp0256, "correção BP - 0256 atendimento CD");
     } else {
-      await saveRequestsSafely("reabertura BP - 0256 para CD");
+      await saveRequestsSafely("correção BP - 0256 atendimento CD");
     }
   }
   if (repairReceivedItemsStuckInReceipt()) {
@@ -1354,53 +1354,60 @@ function repairBp0030VoltageRegulatorCdFulfillment() {
   return changed;
 }
 
-function repairBp0256WrongCdFulfillment() {
+function repairBp0256CdFulfillment() {
   let changed = false;
   const now = new Date().toISOString();
 
   requests = requests.map((request) => {
     if (!isRequestNumber(request, "0256")) return request;
-    const hasWrongCdFlow = getDisplayStatus(request) === "recebimento"
-      && !request.receiptNumber
-      && !request.receiptAt
-      && (request.items || []).some((item) => Number(item.cdQty) > 0);
-    if (!hasWrongCdFlow) return request;
+    if (request.receiptNumber || request.receiptAt) return request;
+    const targetItem = (request.items || []).find((item) => String(item.code || "").trim() === "30024174");
+    if (!targetItem) return request;
+    const alreadyCorrect = request.status === "recebimento"
+      && Number(targetItem.cdQty) === 2
+      && Number(targetItem.purchaseQty) === 8
+      && getCdPendingQty(targetItem) === 0;
+    if (alreadyCorrect) return request;
 
     changed = true;
     const items = request.items.map((item) => {
-      const cdQty = Number(item.cdQty) || 0;
-      if (cdQty <= 0) return item;
+      if (String(item.code || "").trim() !== "30024174") return item;
       return {
         ...item,
-        cdPendingQty: cdQty,
-        cdQty: 0,
-        purchaseQty: 0,
-        purchaseApproval: "",
+        quantity: 10,
+        availableQty: 0,
+        cdPendingQty: 0,
+        cdQty: 2,
+        purchaseQty: 8,
+        purchaseApproval: "approved",
         receiptNumber: "",
         receiptAt: "",
         receiptBy: "",
-        status: "cd",
-        statusItem: "cd",
+        status: "recebimento",
+        statusItem: "recebimento",
       };
     });
 
     return {
       ...request,
       items,
-      status: "cd",
-      cdAt: "",
-      cdBy: "",
-      cdByEmail: "",
-      transferInvoiceName: "",
-      transferInvoiceDataUrl: "",
+      status: "recebimento",
+      cdAt: request.cdAt || now,
+      cdBy: request.cdBy || "CARLA.ALVES",
+      cdByEmail: request.cdByEmail || "carla.alves",
+      transferInvoiceName: request.transferInvoiceName || "2349.pdf",
+      transferInvoiceDataUrl: request.transferInvoiceDataUrl || "",
       receiptNumber: "",
       receiptAt: "",
       receiptBy: "",
       receiptByEmail: "",
       pickupAt: "",
-      cdCorrectionResetAt: now,
-      cdCorrectionResetBy: "Sistema",
-      response: "Atendimento do CD reaberto para correção. CD deve refazer a quantidade e anexar a NF correta.",
+      purchaseAt: request.purchaseAt || now,
+      cdCorrectionResetAt: "",
+      cdCorrectionResetBy: "",
+      cdCorrectionAppliedAt: now,
+      cdCorrectionAppliedBy: "Sistema",
+      response: "CD atendeu parte dos itens; saldo remanescente segue para aprovação de compra. Solicitação anterior ajustada e atendida com 2 caixas.",
     };
   });
 
