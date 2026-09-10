@@ -698,6 +698,14 @@ async function startApp() {
   if (repairBp0030VoltageRegulatorCdFulfillment()) {
     await saveRequestsSafely("ajuste BP - 0030");
   }
+  if (repairBp0256WrongCdFulfillment()) {
+    const repairedBp0256 = requests.find((request) => isRequestNumber(request, "0256"));
+    if (repairedBp0256) {
+      await saveRequestSnapshotSafely(repairedBp0256, "reabertura BP - 0256 para CD");
+    } else {
+      await saveRequestsSafely("reabertura BP - 0256 para CD");
+    }
+  }
   if (repairReceivedItemsStuckInReceipt()) {
     await saveRequestsSafely("recebimentos pendentes");
   }
@@ -1344,6 +1352,64 @@ function repairBp0030VoltageRegulatorCdFulfillment() {
   });
 
   return changed;
+}
+
+function repairBp0256WrongCdFulfillment() {
+  let changed = false;
+  const now = new Date().toISOString();
+
+  requests = requests.map((request) => {
+    if (!isRequestNumber(request, "0256")) return request;
+    const hasWrongCdFlow = getDisplayStatus(request) === "recebimento"
+      && !request.receiptNumber
+      && !request.receiptAt
+      && (request.items || []).some((item) => Number(item.cdQty) > 0);
+    if (!hasWrongCdFlow) return request;
+
+    changed = true;
+    const items = request.items.map((item) => {
+      const cdQty = Number(item.cdQty) || 0;
+      if (cdQty <= 0) return item;
+      return {
+        ...item,
+        cdPendingQty: cdQty,
+        cdQty: 0,
+        purchaseQty: 0,
+        purchaseApproval: "",
+        receiptNumber: "",
+        receiptAt: "",
+        receiptBy: "",
+        status: "cd",
+        statusItem: "cd",
+      };
+    });
+
+    return {
+      ...request,
+      items,
+      status: "cd",
+      cdAt: "",
+      cdBy: "",
+      cdByEmail: "",
+      transferInvoiceName: "",
+      transferInvoiceDataUrl: "",
+      receiptNumber: "",
+      receiptAt: "",
+      receiptBy: "",
+      receiptByEmail: "",
+      pickupAt: "",
+      cdCorrectionResetAt: now,
+      cdCorrectionResetBy: "Sistema",
+      response: "Atendimento do CD reaberto para correção. CD deve refazer a quantidade e anexar a NF correta.",
+    };
+  });
+
+  return changed;
+}
+
+function isRequestNumber(request, number) {
+  const requestDigits = String(request?.id || "").replace(/\D/g, "");
+  return requestDigits === String(number || "").replace(/\D/g, "").padStart(4, "0");
 }
 
 function repairReceivedItemsStuckInReceipt() {
